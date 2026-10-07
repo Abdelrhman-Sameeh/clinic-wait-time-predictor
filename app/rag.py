@@ -16,9 +16,9 @@ from app.scheduler import ConfigNotFoundError
 from app.schemas import BreakTime, ClinicConfig, QuestionRequest, RAGAnswer
 
 
-# Rechecked 2026-10-07 with all-MiniLM-L6-v2/cosine after adding config-based
-# patient-worded lead-ins: in-scope max 0.6914, out-of-scope min 0.7878.
-# 0.76 remains inside the measured separation gap.
+# Rechecked 2026-10-07 with all-MiniLM-L6-v2/cosine and revised topic cues:
+# calibration in-scope max 0.6914, out-of-scope min 0.7905.
+# 0.76 remains inside the measured calibration gap.
 MAX_DISTANCE = 0.76
 COLLECTION_NAME = "clinic_knowledge"
 DEFAULT_PERSIST_DIR = "chroma_db"
@@ -54,8 +54,8 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
         clinic_details.append("Clinic details are not listed.")
     available_days = ", ".join(config.available_days)
     working_days = (
-        f"Open days and hours, including when the clinic opens and closes: "
-        f"the clinic is open {available_days}, "
+        f"Clinic schedule, operating days, opening hours, closing time, and "
+        f"latest appointment times: the clinic is open {available_days}, "
         f"from {_format_time(config.work_start)} to {_format_time(config.work_end)}."
         if available_days
         else "The clinic's working days have not been listed."
@@ -95,7 +95,7 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
         f"{late_policy}"
     )
     services = (
-        "Service prices and costs, or how much each service costs: "
+        "Service fees and prices: the listed charge and cost for each service: "
         + "; ".join(
             f"{service.name} ({service.duration_min} minutes, "
             f"price {service.price:g})"
@@ -108,7 +108,8 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
 
     sections = {
         "Clinic Information": (
-            "Clinic location, address, and phone number: "
+            "Clinic location and contact: street address, where to find the "
+            "clinic, telephone number, and phone: "
             + " ".join(clinic_details)
         ),
         "Working Days and Hours": working_days,
@@ -117,12 +118,14 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
         "Peak Hours and Waiting Times": waiting,
         "Late Arrival Policy": late_arrival,
         "Cancellation Policy": (
-            "Cancelling an appointment or asking how to cancel: "
+            "Booking cancellations and changes: cancelling or calling off a "
+            "visit, postponing it, or rescheduling; the clinic's terms: "
             + (config.cancellation_policy.strip() or "No policy is listed.")
         ),
         "Walk-in Policy": (
-            "Walk-in patients: can I come without an appointment? "
-            "Coming to the clinic without booking first: "
+            "Walk-in policy for people seeking a visit without an appointment "
+            "or advance booking: unbooked patients, drop-in visits, and walk-up "
+            "attendance. "
             + (config.walkin_policy.strip() or "No policy is listed.")
         ),
         "Emergency Policy": (
@@ -130,13 +133,16 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
             + (config.emergency_policy.strip() or "No policy is listed.")
         ),
         "No-show Policy": (
-            "Missing an appointment or not showing up: "
+            "No-show consequences for repeated missed visits after a booking: "
             + (config.noshow_policy.strip() or "No policy is listed.")
         ),
         "Services and Prices": services,
     }
     if config.special_conditions and config.special_conditions.strip():
-        sections["Special Conditions"] = config.special_conditions.strip()
+        sections["Special Conditions"] = (
+            "Additional clinic-specific detail: "
+            + config.special_conditions.strip()
+        )
     return sections
 
 
