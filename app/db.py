@@ -156,6 +156,45 @@ def get_appointment(
     return AppointmentRecord.model_validate(dict(zip(_APPOINTMENT_COLUMNS.split(", "), row)))
 
 
+def get_patient_phone(
+    appointment_id: int, path: str = DEFAULT_DB_PATH
+) -> str | None:
+    """Read the stored contact phone for an appointment."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        row = connection.execute(
+            "SELECT patient_phone FROM appointments WHERE appointment_id = ?",
+            (appointment_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    return None if row is None else row[0]
+
+
+def get_appointment_data_summary(path: str = DEFAULT_DB_PATH) -> tuple[int, int]:
+    """Return total appointment count and completed rows with observed waits."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        row = connection.execute(
+            """
+            SELECT
+                COUNT(*),
+                SUM(
+                    CASE
+                        WHEN outcome = 'completed' AND actual_wait_min IS NOT NULL
+                        THEN 1 ELSE 0
+                    END
+                )
+            FROM appointments
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+    return int(row[0]), int(row[1] or 0)
+
+
 def get_next_appointment_id(path: str = DEFAULT_DB_PATH) -> int:
     """Return the next appointment ID, starting with 1."""
     init_db(path)
