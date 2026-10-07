@@ -16,8 +16,9 @@ from app.scheduler import ConfigNotFoundError
 from app.schemas import BreakTime, ClinicConfig, QuestionRequest, RAGAnswer
 
 
-# Calibrated 2026-10-07 with Chroma all-MiniLM-L6-v2/cosine:
-# in-scope max 0.7252, out-of-scope min 0.7878; midpoint rounds to 0.76.
+# Rechecked 2026-10-07 with all-MiniLM-L6-v2/cosine after adding config-based
+# patient-worded lead-ins: in-scope max 0.6914, out-of-scope min 0.7878.
+# 0.76 remains inside the measured separation gap.
 MAX_DISTANCE = 0.76
 COLLECTION_NAME = "clinic_knowledge"
 DEFAULT_PERSIST_DIR = "chroma_db"
@@ -53,22 +54,26 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
         clinic_details.append("Clinic details are not listed.")
     available_days = ", ".join(config.available_days)
     working_days = (
-        f"The clinic is open {available_days}, "
+        f"Open days and hours, including when the clinic opens and closes: "
+        f"the clinic is open {available_days}, "
         f"from {_format_time(config.work_start)} to {_format_time(config.work_end)}."
         if available_days
         else "The clinic's working days have not been listed."
     )
     breaks = (
-        f"Scheduled breaks are {_format_ranges(config.breaks)}."
+        f"Breaks or pauses during clinic hours: scheduled breaks are "
+        f"{_format_ranges(config.breaks)}."
         if config.breaks
         else "No scheduled breaks are listed."
     )
     appointment_rules = (
-        f"Appointments are {config.appointment_duration_min} minutes long, "
-        f"with a {config.buffer_min}-minute buffer. The daily maximum is "
-        f"{config.max_appointments_per_day} appointments, with up to "
-        f"{config.max_patients_per_slot} patient(s) per slot. "
-        "Bookings are for the next day."
+        "How many patients can be booked per day: the daily maximum is "
+        f"{config.max_appointments_per_day} appointments. Booking for today "
+        "or tomorrow: bookings are for the next day. Appointment length and "
+        f"patients per time slot: appointments are "
+        f"{config.appointment_duration_min} minutes long, "
+        f"with a {config.buffer_min}-minute buffer, with up to "
+        f"{config.max_patients_per_slot} patient(s) per slot."
     )
     peak_hours = (
         f"Peak hours are {_format_ranges(config.peak_hours)}."
@@ -76,7 +81,8 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
         else "No peak hours are listed."
     )
     waiting = (
-        f"{peak_hours} The acceptable wait is up to "
+        f"Peak times, busy hours, and waiting time: {peak_hours} "
+        f"The acceptable wait is up to "
         f"{config.acceptable_wait_min} minutes; a wait of "
         f"{config.high_wait_threshold_min} minutes or more is considered high."
     )
@@ -84,11 +90,12 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
         config.late_arrival_policy.strip() or "No late-arrival policy is listed."
     )
     late_arrival = (
-        f"The late-arrival grace period is {config.late_arrival_grace_min} minutes. "
+        "Arriving late or running late for an appointment: "
+        f"the grace period is {config.late_arrival_grace_min} minutes. "
         f"{late_policy}"
     )
     services = (
-        "Available services and prices: "
+        "Service prices and costs, or how much each service costs: "
         + "; ".join(
             f"{service.name} ({service.duration_min} minutes, "
             f"price {service.price:g})"
@@ -100,20 +107,32 @@ def build_knowledge_sections(config: ClinicConfig) -> dict[str, str]:
     )
 
     sections = {
-        "Clinic Information": " ".join(clinic_details),
+        "Clinic Information": (
+            "Clinic location, address, and phone number: "
+            + " ".join(clinic_details)
+        ),
         "Working Days and Hours": working_days,
         "Breaks": breaks,
         "Appointments and Booking Rules": appointment_rules,
         "Peak Hours and Waiting Times": waiting,
         "Late Arrival Policy": late_arrival,
-        "Cancellation Policy": config.cancellation_policy.strip()
-        or "No cancellation policy is listed.",
-        "Walk-in Policy": config.walkin_policy.strip()
-        or "No walk-in policy is listed.",
-        "Emergency Policy": config.emergency_policy.strip()
-        or "No emergency policy is listed.",
-        "No-show Policy": config.noshow_policy.strip()
-        or "No no-show policy is listed.",
+        "Cancellation Policy": (
+            "Cancelling an appointment or asking how to cancel: "
+            + (config.cancellation_policy.strip() or "No policy is listed.")
+        ),
+        "Walk-in Policy": (
+            "Walk-in patients: can I come without an appointment? "
+            "Coming to the clinic without booking first: "
+            + (config.walkin_policy.strip() or "No policy is listed.")
+        ),
+        "Emergency Policy": (
+            "For an emergency or urgent medical help: "
+            + (config.emergency_policy.strip() or "No policy is listed.")
+        ),
+        "No-show Policy": (
+            "Missing an appointment or not showing up: "
+            + (config.noshow_policy.strip() or "No policy is listed.")
+        ),
         "Services and Prices": services,
     }
     if config.special_conditions and config.special_conditions.strip():
