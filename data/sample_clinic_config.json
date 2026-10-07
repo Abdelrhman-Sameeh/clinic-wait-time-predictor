@@ -1,0 +1,51 @@
+{
+  "clinic_name": "Al Noor Family Clinic",
+  "specialty": "Family Medicine",
+  "address": "18 Garden Street, Amman",
+  "phone": "+962-6-555-0142",
+  "available_days": ["Mon", "Tue", "Wed", "Thu", "Sat"],
+  "work_start": "16:00:00",
+  "work_end": "21:00:00",
+  "breaks": [
+    {
+      "start": "18:30:00",
+      "end": "18:45:00"
+    }
+  ],
+  "appointment_duration_min": 15,
+  "buffer_min": 5,
+  "max_appointments_per_day": 30,
+  "max_patients_per_slot": 1,
+  "peak_hours": [
+    {
+      "start": "17:00:00",
+      "end": "20:00:00"
+    }
+  ],
+  "acceptable_wait_min": 15,
+  "high_wait_threshold_min": 30,
+  "late_arrival_grace_min": 15,
+  "late_arrival_policy": "More than 15 minutes late: the appointment may be rescheduled",
+  "cancellation_policy": "Please cancel at least 4 hours before your appointment.",
+  "walkin_policy": "Walk-ins are accepted when capacity allows and may have a longer wait.",
+  "emergency_policy": "Medical emergencies should go to the nearest emergency department.",
+  "noshow_policy": "Repeated no-shows may require confirmation before future bookings.",
+  "services": [
+    {
+      "name": "General consultation",
+      "duration_min": 15,
+      "price": 20.0
+    },
+    {
+      "name": "Follow-up visit",
+      "duration_min": 15,
+      "price": 12.0
+    },
+    {
+      "name": "Preventive health check",
+      "duration_min": 30,
+      "price": 35.0
+    }
+  ],
+  "special_conditions": "Appointments are for one patient and one doctor."
+}

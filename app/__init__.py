@@ -1,0 +1,1 @@
+"""Clinic booking application package."""
