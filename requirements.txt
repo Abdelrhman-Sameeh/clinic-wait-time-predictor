@@ -6,3 +6,7 @@ chromadb
 ipykernel
 pytest
 nbstripout
+# Optional: install only when using the OpenAI provider.
+# openai
+# Optional: install only when using the Anthropic provider.
+# anthropic
