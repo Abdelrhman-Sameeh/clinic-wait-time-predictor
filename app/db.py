@@ -1,6 +1,7 @@
 """SQLite persistence for clinic configuration and appointment records."""
 
 import sqlite3
+from datetime import date, datetime
 from pathlib import Path
 
 from app.schemas import AppointmentRecord, ClinicConfig
@@ -42,6 +43,7 @@ def init_db(path: str = DEFAULT_DB_PATH) -> None:
                 appointment_id INTEGER PRIMARY KEY,
                 booking_timestamp TEXT NOT NULL,
                 appointment_date TEXT NOT NULL,
+                patient_phone TEXT,
                 day_of_week TEXT NOT NULL,
                 scheduled_time TEXT NOT NULL,
                 queue_number INTEGER NOT NULL,
@@ -61,6 +63,12 @@ def init_db(path: str = DEFAULT_DB_PATH) -> None:
             )
             """
         )
+        appointment_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(appointments)").fetchall()
+        }
+        if "patient_phone" not in appointment_columns:
+            connection.execute("ALTER TABLE appointments ADD COLUMN patient_phone TEXT")
         connection.commit()
     finally:
         connection.close()
@@ -104,18 +112,25 @@ def load_clinic_config(path: str = DEFAULT_DB_PATH) -> ClinicConfig | None:
 
 
 def insert_appointment(
-    record: AppointmentRecord, path: str = DEFAULT_DB_PATH
+    record: AppointmentRecord,
+    path: str = DEFAULT_DB_PATH,
+    patient_phone: str | None = None,
 ) -> None:
-    """Insert an appointment record, serializing dates and times as ISO strings."""
+    """Insert an appointment and optional contact phone, serializing ISO values."""
     init_db(path)
     values = record.model_dump(mode="json")
-    placeholders = ", ".join("?" for _ in values)
+    columns = _APPOINTMENT_COLUMNS
+    parameters = tuple(values.values())
+    if patient_phone is not None:
+        columns = f"{columns}, patient_phone"
+        parameters += (patient_phone,)
+    placeholders = ", ".join("?" for _ in parameters)
     connection = get_connection(path)
     try:
         connection.execute(
-            f"INSERT INTO appointments ({_APPOINTMENT_COLUMNS}) "
+            f"INSERT INTO appointments ({columns}) "
             f"VALUES ({placeholders})",
-            tuple(values.values()),
+            parameters,
         )
         connection.commit()
     finally:
@@ -139,3 +154,133 @@ def get_appointment(
     if row is None:
         return None
     return AppointmentRecord.model_validate(dict(zip(_APPOINTMENT_COLUMNS.split(", "), row)))
+
+
+def get_next_appointment_id(path: str = DEFAULT_DB_PATH) -> int:
+    """Return the next appointment ID, starting with 1."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(appointment_id), 0) + 1 FROM appointments"
+        ).fetchone()
+    finally:
+        connection.close()
+    return int(row[0])
+
+
+def list_appointments_by_date(
+    appointment_date: date, path: str = DEFAULT_DB_PATH
+) -> list[AppointmentRecord]:
+    """Load a day's appointments ordered by queue number."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        rows = connection.execute(
+            f"SELECT {_APPOINTMENT_COLUMNS} FROM appointments "
+            "WHERE appointment_date = ? ORDER BY queue_number",
+            (appointment_date.isoformat(),),
+        ).fetchall()
+    finally:
+        connection.close()
+    column_names = _APPOINTMENT_COLUMNS.split(", ")
+    return [
+        AppointmentRecord.model_validate(dict(zip(column_names, row)))
+        for row in rows
+    ]
+
+
+def update_arrival(
+    appointment_id: int,
+    actual_arrival: datetime,
+    late_minutes: int,
+    path: str = DEFAULT_DB_PATH,
+) -> None:
+    """Save an arrival timestamp and the calculated lateness."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        connection.execute(
+            """
+            UPDATE appointments
+            SET actual_arrival = ?, late_minutes = ?
+            WHERE appointment_id = ?
+            """,
+            (actual_arrival.isoformat(), late_minutes, appointment_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def update_consultation(
+    appointment_id: int,
+    consult_start: datetime,
+    consult_end: datetime,
+    consult_duration_min: float,
+    actual_wait_min: float,
+    outcome: str,
+    path: str = DEFAULT_DB_PATH,
+) -> None:
+    """Save consultation timing and outcome fields."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        connection.execute(
+            """
+            UPDATE appointments
+            SET consult_start = ?, consult_end = ?, consult_duration_min = ?,
+                actual_wait_min = ?, outcome = ?
+            WHERE appointment_id = ?
+            """,
+            (
+                consult_start.isoformat(),
+                consult_end.isoformat(),
+                consult_duration_min,
+                actual_wait_min,
+                outcome,
+                appointment_id,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def update_outcome(
+    appointment_id: int, outcome: str, path: str = DEFAULT_DB_PATH
+) -> None:
+    """Update an appointment's outcome."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        connection.execute(
+            "UPDATE appointments SET outcome = ? WHERE appointment_id = ?",
+            (outcome, appointment_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def has_active_booking(
+    patient_phone: str,
+    appointment_date: date,
+    path: str = DEFAULT_DB_PATH,
+) -> bool:
+    """Check whether a phone has a non-cancelled booking on a date."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM appointments
+            WHERE patient_phone = ? AND appointment_date = ? AND outcome != ?
+            LIMIT 1
+            """,
+            (patient_phone, appointment_date.isoformat(), "cancelled"),
+        ).fetchone()
+    finally:
+        connection.close()
+    return row is not None
