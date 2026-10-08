@@ -456,6 +456,103 @@ def test_admin_config_put_is_returned_by_get_and_sqlite(api_client) -> None:
     assert load_clinic_config(path=db_path) == changed_config
 
 
+def test_admin_config_no_edit_round_trip_and_duration_update(api_client) -> None:
+    client, config, db_path = api_client
+    headers = staff_headers()
+
+    unchanged = client.put(
+        "/admin/config",
+        json=config.model_dump(mode="json"),
+        headers=headers,
+    )
+    assert unchanged.status_code == 200
+    assert client.get("/admin/config", headers=headers).json() == (
+        config.model_dump(mode="json")
+    )
+    assert load_clinic_config(path=db_path) == config
+
+    changed_payload = config.model_dump(mode="json")
+    changed_payload["appointment_duration_min"] += 5
+    changed = client.put(
+        "/admin/config",
+        json=changed_payload,
+        headers=headers,
+    )
+    public_config = client.get("/clinic")
+    saved_config = client.get("/admin/config", headers=headers)
+
+    assert changed.status_code == 200
+    assert public_config.json()["appointment_duration_min"] == (
+        config.appointment_duration_min + 5
+    )
+    assert saved_config.json()["appointment_duration_min"] == (
+        config.appointment_duration_min + 5
+    )
+
+
+def test_admin_config_updates_services_breaks_and_peak_hours(api_client) -> None:
+    client, config, db_path = api_client
+    payload = config.model_dump(mode="json")
+    payload["breaks"] = [{"start": "19:00:00", "end": "19:10:00"}]
+    payload["peak_hours"].append({"start": "16:00:00", "end": "17:00:00"})
+    payload["services"].append(
+        {"name": "Extended consultation", "duration_min": 30, "price": 42.5}
+    )
+
+    response = client.put(
+        "/admin/config",
+        json=payload,
+        headers=staff_headers(),
+    )
+    saved = client.get("/admin/config", headers=staff_headers())
+    parsed = ClinicConfig.model_validate(saved.json())
+
+    assert response.status_code == 200
+    assert saved.status_code == 200
+    assert parsed.breaks[0].start.isoformat() == "19:00:00"
+    assert parsed.peak_hours[-1].end.isoformat() == "17:00:00"
+    assert parsed.services[-1].name == "Extended consultation"
+    assert parsed.services[-1].duration_min == 30
+    assert parsed.services[-1].price == 42.5
+    assert load_clinic_config(path=db_path) == parsed
+
+
+def test_admin_knowledge_endpoints_ingest_retrieve_and_delete(api_client) -> None:
+    client, _, _ = api_client
+    headers = staff_headers()
+    content = "Dr. Sarah is available every Thursday from 4 PM to 8 PM."
+
+    added = client.post(
+        "/staff/knowledge",
+        json={"content": content},
+        headers=headers,
+    )
+    assert added.status_code == 201
+    entry = added.json()
+    entries = client.get("/staff/knowledge", headers=headers)
+    answer = client.post(
+        "/ask",
+        json={"question": "When is Dr. Sarah available?"},
+    )
+    status_response = client.get("/staff/index-status", headers=headers)
+
+    assert entries.status_code == 200
+    assert entries.json() == [entry]
+    assert answer.status_code == 200
+    assert "Thursday from 4 PM to 8 PM" in answer.json()["answer"]
+    assert answer.json()["found_in_clinic_info"]
+    assert answer.json()["source_sections"] == ["Admin Knowledge"]
+    assert status_response.json()["admin_document_count"] == 1
+    assert client.get("/staff/knowledge").status_code == 401
+
+    deleted = client.delete(
+        f"/staff/knowledge/{entry['id']}",
+        headers=headers,
+    )
+    assert deleted.status_code == 204
+    assert client.get("/staff/knowledge", headers=headers).json() == []
+
+
 def test_admin_config_put_normalizes_omitted_default_fields(api_client) -> None:
     client, config, db_path = api_client
     payload = config.model_dump(mode="json")

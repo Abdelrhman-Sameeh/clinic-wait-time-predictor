@@ -112,6 +112,38 @@ Run the notebooks in order from the `notebooks/` folder:
 | `05_phase2_ml_training.ipynb` | Data-sufficiency check, features, regression training, and evaluation |
 | `06_full_demo.ipynb` | End-to-end demo of both phases |
 
+## Clinic management and RAG assistant
+
+Start the API and Streamlit UI in separate terminals from the repository root:
+
+```powershell
+uvicorn app.api:app --reload
+streamlit run ui/streamlit_app.py
+```
+
+The sidebar contains the Assistant, Knowledge Base, Clinic Configuration, and
+System Status pages. Enter the configured `STAFF_API_KEY` in the sidebar to
+manage clinic settings, add or remove free-form knowledge, or use staff
+operations. Configuration is saved through the API to SQLite. Admin-added
+knowledge is chunked and embedded into the existing persistent Chroma
+collection; configuration updates rebuild the clinic sections while preserving
+those admin entries.
+
+The assistant uses the configured `LLM_PROVIDER`. For local Qwen generation,
+install its separate dependencies using a PyTorch build appropriate for the
+machine:
+
+```powershell
+pip install -r requirements-qwen.txt
+$env:LLM_PROVIDER = "qwen"
+```
+
+The model `Qwen/Qwen2.5-1.5B-Instruct` is downloaded on first use and cached
+for the running process. FP16 inference needs roughly 3–4 GB of VRAM; CPU
+inference uses float32 and is considerably slower. If the model or its weights
+are unavailable, RAG answers fall back to the existing extractive generator.
+The existing retrieval evaluation remains in `notebooks/03_rag_demo.ipynb`.
+
 **Project structure**
 
 ```
@@ -120,11 +152,13 @@ Run the notebooks in order from the `notebooks/` folder:
 │   ├── db.py             # SQLite helpers
 │   ├── scheduler.py      # Phase 1 queue logic
 │   ├── rag.py            # knowledge doc, chunking, vector DB
-│   └── ml.py             # features, training, prediction
+│   ├── ml.py             # features, training, prediction
+│   └── qwen.py           # optional cached local answer generation
 ├── notebooks/            # one notebook per stage
 ├── data/                 # sample clinic config
 ├── tests/
 ├── requirements.txt
+├── requirements-qwen.txt # optional local model dependencies
 └── README.md
 ```
 

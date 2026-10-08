@@ -12,12 +12,15 @@ from pydantic import ValidationError
 from app.db import save_clinic_config
 from app.rag import (
     MAX_DISTANCE,
+    add_admin_knowledge,
     answer_question,
     build_index,
     build_knowledge_document,
     build_knowledge_sections,
     chunk_sections,
+    delete_admin_knowledge,
     is_overview_question,
+    list_admin_knowledge,
     rebuild_index_from_db,
     retrieve,
 )
@@ -153,6 +156,75 @@ def test_build_index_replaces_existing_collection_without_duplicates(
         k=20,
     )
     assert len(results) == expected_count
+
+
+def test_admin_knowledge_is_retrievable_and_survives_config_rebuild(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, persist_dir, embedding_function = rag_setup
+    build_index(config, persist_dir, embedding_function)
+    content = "Dr. Sarah is available every Thursday from 4 PM to 8 PM."
+    entry = add_admin_knowledge(
+        content,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+    )
+    monkeypatch.setenv("LLM_PROVIDER", "extractive")
+
+    results = retrieve(
+        "When is Dr. Sarah available?",
+        k=3,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+    )
+    answer = answer_question(
+        QuestionRequest(question="When is Dr. Sarah available?"),
+        db_path=db_path,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+    )
+
+    assert results[0]["source"] == "admin"
+    assert "Thursday from 4 PM to 8 PM" in results[0]["text"]
+    assert answer.found_in_clinic_info
+    assert "Thursday from 4 PM to 8 PM" in answer.answer
+    assert list_admin_knowledge(persist_dir, embedding_function) == [entry]
+
+    build_index(config, persist_dir, embedding_function)
+    assert list_admin_knowledge(persist_dir, embedding_function) == [entry]
+    assert delete_admin_knowledge(
+        entry["id"],
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+    )
+    assert list_admin_knowledge(persist_dir, embedding_function) == []
+
+
+def test_qwen_generation_failure_uses_grounded_extractive_answer(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, persist_dir, embedding_function = rag_setup
+    build_index(config, persist_dir, embedding_function)
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+
+    from app import qwen
+
+    def unavailable(*_: str) -> str:
+        raise OSError("model weights are unavailable")
+
+    monkeypatch.setattr(qwen, "generate_answer", unavailable)
+    answer = answer_question(
+        QuestionRequest(question="What is the late arrival policy?"),
+        db_path=db_path,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+    )
+
+    assert answer.found_in_clinic_info
+    assert "late arrival" in answer.answer.casefold()
+    assert answer.source_sections == ["Late Arrival Policy"]
 
 
 def test_retrieve_finds_late_arrival_section(

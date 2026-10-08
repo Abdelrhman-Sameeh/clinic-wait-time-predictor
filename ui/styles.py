@@ -1,4 +1,4 @@
-"""Shared dark-theme styling for the clinic Streamlit interface."""
+"""Shared healthcare styling for the clinic Streamlit interface."""
 
 
 def get_theme_css() -> str:
@@ -6,8 +6,8 @@ def get_theme_css() -> str:
     return """
     <style>
         .stApp {
-            background: #090d14;
-            color: #f4f7fb;
+            background: #f4f8fa;
+            color: #153b4a;
         }
 
         .stApp, .stApp * {
@@ -15,8 +15,8 @@ def get_theme_css() -> str:
         }
 
         .stSidebar {
-            background: #0f1726;
-            border-right: 1px solid rgba(148, 163, 184, 0.2);
+            background: #ffffff;
+            border-right: 1px solid #d8e7eb;
         }
 
         .stTabs [data-baseweb="tab-list"] {
@@ -24,40 +24,58 @@ def get_theme_css() -> str:
         }
 
         .stTabs [data-baseweb="tab"] {
-            background: #101827;
-            color: #dfe7fb;
+            background: #eaf3f5;
+            color: #245264;
             border-radius: 0.6rem 0.6rem 0 0;
-            border: 1px solid rgba(148, 163, 184, 0.2);
+            border: 1px solid #d5e5e9;
             padding: 0.5rem 1rem;
         }
 
         .stTabs [aria-selected="true"] {
-            background: #19324c;
-            color: #f8fbff;
-            border-color: rgba(125, 211, 252, 0.4);
+            background: #ffffff;
+            color: #087e8b;
+            border-color: #90cbd0;
         }
 
         .stAlert, .stSuccess, .stWarning, .stInfo, .stError {
             border-radius: 0.75rem;
         }
 
-        div[data-testid="stHorizontalBlock"] > div {
-            border-radius: 0.75rem;
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            background: #ffffff;
+            border: 1px solid #dce9ec;
+            border-radius: 0.9rem;
+            box-shadow: 0 2px 10px rgba(25, 75, 88, 0.04);
+            padding: 0.7rem;
         }
 
         .stTextInput > div > div > input,
         .stNumberInput > div > div > input,
         .stTextArea > div > textarea,
+        .stDateInput > div > div > input,
+        .stTimeInput > div > div > input,
         .stSelectbox > div > div,
-        .stDateInput > div > div,
-        .stTimeInput > div > div,
         .stMultiSelect > div > div,
-        .stCheckbox > label,
-        .stRadio > div {
-            background: #111827 !important;
-            color: #f8fafc !important;
-            border: 1px solid rgba(148, 163, 184, 0.25) !important;
+        [data-testid="stBaseInputContainer"],
+        input[type="text"],
+        input[type="number"],
+        textarea,
+        select,
+        .stSelectbox [data-baseweb="select"],
+        .stTextArea [data-baseweb="textarea"] {
+            background: #ffffff !important;
+            color: #173d4b !important;
+            border: 1px solid #bfd6dc !important;
             border-radius: 0.6rem !important;
+            -webkit-text-fill-color: #173d4b !important;
+        }
+
+        .stTextInput input::placeholder,
+        .stTextArea textarea::placeholder,
+        .stNumberInput input::placeholder,
+        input::placeholder,
+        textarea::placeholder {
+            color: #6d8993 !important;
         }
 
         .stTextInput label,
@@ -68,31 +86,50 @@ def get_theme_css() -> str:
         .stTimeInput label,
         .stMultiSelect label,
         .stCheckbox label,
-        .stRadio label {
-            color: #e2e8f0 !important;
+        .stRadio label,
+        .stMarkdown p,
+        .stMarkdown li,
+        .stMarkdown h1,
+        .stMarkdown h2,
+        .stMarkdown h3,
+        .stMarkdown h4,
+        .stMarkdown h5,
+        .stMarkdown h6 {
+            color: #173d4b !important;
         }
 
         .stButton > button {
             border-radius: 0.7rem;
-            background: linear-gradient(135deg, #0ea5e9, #2563eb);
-            color: white;
-            border: none;
+            background: linear-gradient(135deg, #087e8b, #126b9a);
+            color: #ffffff;
+            border: 1px solid #087e8b;
             font-weight: 600;
             padding: 0.65rem 1.1rem;
         }
 
         .stButton > button:hover {
-            filter: brightness(1.08);
+            filter: brightness(1.12);
         }
 
         .stDataFrame, .stDataFrame * {
-            background: #0b1220;
-            color: #f8fafc;
+            background: #ffffff;
+            color: #173d4b;
         }
 
         .block-container {
             padding-top: 2rem;
             padding-bottom: 2rem;
+            max-width: 1200px;
+        }
+
+        [data-testid="stChatMessage"] {
+            background: #ffffff;
+            border: 1px solid #dce9ec;
+            border-radius: 0.9rem;
+        }
+
+        .stCaption {
+            color: #587681 !important;
         }
     </style>
     """

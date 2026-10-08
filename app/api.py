@@ -12,7 +12,7 @@ from typing import Any, Callable, Literal
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.db import (
     get_appointment,
@@ -23,7 +23,15 @@ from app.db import (
     load_clinic_config,
     save_clinic_config,
 )
-from app.rag import answer_question, get_index_status, rebuild_index_from_db
+from app.rag import (
+    KnowledgeIndexUnavailable,
+    add_admin_knowledge,
+    answer_question,
+    delete_admin_knowledge,
+    get_index_status,
+    list_admin_knowledge,
+    rebuild_index_from_db,
+)
 from app.scheduler import (
     ClinicClosedError,
     ConfigNotFoundError,
@@ -197,6 +205,24 @@ class IndexStatusResponse(BaseModel):
     chroma_dir: str
     db_path: str
     section_titles: list[str]
+    vector_store_ready: bool
+    admin_document_count: int
+    llm_provider: str
+    llm_loaded: bool
+
+
+class AdminKnowledgeCreate(BaseModel):
+    """One free-form entry submitted by clinic staff."""
+
+    content: str = Field(min_length=1)
+
+
+class AdminKnowledgeRecord(BaseModel):
+    """A persisted free-form knowledge entry."""
+
+    id: str
+    content: str
+    timestamp: str
 
 
 def require_staff_key(
@@ -447,12 +473,102 @@ def staff_index_status(
         persist_dir=_chroma_dir(),
         embedding_function=embedding_function,
     )
+    admin_entries = list_admin_knowledge(
+        persist_dir=_chroma_dir(),
+        embedding_function=embedding_function,
+    )
+    provider = os.getenv("LLM_PROVIDER", "extractive").strip().casefold()
+    model_loaded = False
+    if provider == "qwen":
+        try:
+            from app.qwen import is_model_loaded
+
+            model_loaded = is_model_loaded()
+        except ImportError:
+            model_loaded = False
     return IndexStatusResponse(
         chunk_count=chunk_count,
         chroma_dir=_chroma_dir(),
         db_path=_db_path(),
         section_titles=sections,
+        vector_store_ready=chunk_count > 0,
+        admin_document_count=len(admin_entries),
+        llm_provider=provider,
+        llm_loaded=model_loaded,
     )
+
+
+@app.get(
+    "/staff/knowledge",
+    response_model=list[AdminKnowledgeRecord],
+    dependencies=[Depends(require_staff_key)],
+)
+def staff_list_knowledge(
+    rag_deps: tuple[Any | None, Callable[[str, str], str] | None] = Depends(
+        get_rag_deps
+    ),
+) -> list[AdminKnowledgeRecord]:
+    """List admin-added knowledge stored in the clinic's vector collection."""
+    embedding_function, _ = rag_deps
+    return [
+        AdminKnowledgeRecord(**entry)
+        for entry in list_admin_knowledge(
+            persist_dir=_chroma_dir(),
+            embedding_function=embedding_function,
+        )
+    ]
+
+
+@app.post(
+    "/staff/knowledge",
+    response_model=AdminKnowledgeRecord,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_staff_key)],
+)
+def staff_add_knowledge(
+    entry: AdminKnowledgeCreate,
+    rag_deps: tuple[Any | None, Callable[[str, str], str] | None] = Depends(
+        get_rag_deps
+    ),
+) -> AdminKnowledgeRecord:
+    """Chunk, embed, and persist an admin entry in the existing vector store."""
+    if not entry.content.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Knowledge content must not be blank.",
+        )
+    embedding_function, _ = rag_deps
+    try:
+        stored = add_admin_knowledge(
+            entry.content,
+            persist_dir=_chroma_dir(),
+            embedding_function=embedding_function,
+        )
+    except KnowledgeIndexUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return AdminKnowledgeRecord(**stored)
+
+
+@app.delete(
+    "/staff/knowledge/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_staff_key)],
+)
+def staff_delete_knowledge(
+    document_id: str,
+    rag_deps: tuple[Any | None, Callable[[str, str], str] | None] = Depends(
+        get_rag_deps
+    ),
+) -> None:
+    """Remove one admin entry and all of its vector chunks."""
+    embedding_function, _ = rag_deps
+    deleted = delete_admin_knowledge(
+        document_id,
+        persist_dir=_chroma_dir(),
+        embedding_function=embedding_function,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="knowledge entry not found")
 
 
 @app.get(
