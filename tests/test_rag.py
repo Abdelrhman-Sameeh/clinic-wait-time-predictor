@@ -17,6 +17,7 @@ from app.rag import (
     build_knowledge_document,
     build_knowledge_sections,
     chunk_sections,
+    is_overview_question,
     rebuild_index_from_db,
     retrieve,
 )
@@ -328,3 +329,273 @@ def test_out_of_scope_response_when_all_results_exceed_max_distance(
         llm=lambda system, user: pytest.fail("LLM must not be called"),
     )
     assert answer.found_in_clinic_info is False
+
+
+def _use_openai_compatible_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure the offline-injected OpenAI-compatible provider path."""
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Is this clinic good?",
+        "Is the clinic good?",
+        "Is the doctor good?",
+        "Should I choose this clinic?",
+        "Would you recommend this clinic?",
+        "Is this clinic worth it?",
+        "Tell me about the clinic.",
+        "What do you offer?",
+        "What does the clinic do?",
+        "Does the clinic have reviews?",
+        "What is the clinic's reputation?",
+    ],
+)
+def test_is_overview_question_matches_clinic_overview_phrases(
+    question: str,
+) -> None:
+    assert is_overview_question(question)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What if I arrive late?",
+        "Do you treat dogs?",
+        "Can you recommend a good restaurant nearby?",
+        "Should I choose Python?",
+    ],
+)
+def test_is_overview_question_does_not_match_specific_or_unrelated_questions(
+    question: str,
+) -> None:
+    assert not is_overview_question(question)
+
+
+def test_openai_compatible_overview_uses_fixed_config_sections(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, _persist_dir, _embedding_function = rag_setup
+    _use_openai_compatible_provider(monkeypatch)
+    prompts: list[tuple[str, str]] = []
+
+    def fake_llm(system_prompt: str, user_prompt: str) -> str:
+        prompts.append((system_prompt, user_prompt))
+        return "I cannot judge quality, but here is what the clinic offers."
+
+    answer = answer_question(
+        QuestionRequest(question="Is this clinic good?"),
+        db_path=db_path,
+        persist_dir=str(Path(db_path).parent / "no-index-needed"),
+        llm=fake_llm,
+    )
+
+    expected_sections = [
+        "Clinic Information",
+        "Working Days and Hours",
+        "Appointments and Booking Rules",
+        "Peak Hours and Waiting Times",
+        "Services and Prices",
+    ]
+    assert answer.answer.startswith("I cannot judge quality")
+    assert answer.source_sections == expected_sections
+    assert answer.found_in_clinic_info is True
+    assert all(section in prompts[0][1] for section in expected_sections)
+    assert "Never invent praise, ratings, reviews" in prompts[0][0]
+    assert config.clinic_name in prompts[0][1]
+
+
+def test_openai_compatible_overview_provider_error_returns_extractive_overview(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, _persist_dir, _embedding_function = rag_setup
+    _use_openai_compatible_provider(monkeypatch)
+    sections = build_knowledge_sections(config)
+    expected_titles = [
+        "Clinic Information",
+        "Working Days and Hours",
+        "Appointments and Booking Rules",
+        "Peak Hours and Waiting Times",
+        "Services and Prices",
+    ]
+    expected_answer = "\n\n".join(
+        f"[{title}]\n{sections[title]}" for title in expected_titles
+    )
+
+    def failing_llm(system_prompt: str, user_prompt: str) -> str:
+        raise TimeoutError("provider details must not be logged")
+
+    answer = answer_question(
+        QuestionRequest(question="Tell me about the clinic."),
+        db_path=db_path,
+        persist_dir=str(Path(db_path).parent / "no-index-needed"),
+        llm=failing_llm,
+    )
+
+    assert answer.answer == expected_answer
+    assert answer.source_sections == expected_titles
+    assert answer.found_in_clinic_info is True
+
+
+def test_openai_compatible_unrelated_question_still_skips_llm(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, persist_dir, embedding_function = rag_setup
+    build_index(config, persist_dir, embedding_function)
+    _use_openai_compatible_provider(monkeypatch)
+
+    answer = answer_question(
+        QuestionRequest(question="Do you treat dogs?"),
+        db_path=db_path,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+        llm=lambda system, user: pytest.fail("LLM must not be called"),
+    )
+
+    assert answer.found_in_clinic_info is False
+    assert answer.source_sections == []
+    assert config.phone in answer.answer
+
+
+def test_openai_compatible_returns_natural_answer_and_real_sources(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, persist_dir, embedding_function = rag_setup
+    build_index(config, persist_dir, embedding_function)
+    _use_openai_compatible_provider(monkeypatch)
+    prompts: list[tuple[str, str]] = []
+
+    def fake_llm(system_prompt: str, user_prompt: str) -> str:
+        prompts.append((system_prompt, user_prompt))
+        return "The clinic allows 15 minutes of grace for late arrivals."
+
+    answer = answer_question(
+        QuestionRequest(question="What if I arrive late?"),
+        db_path=db_path,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+        llm=fake_llm,
+    )
+
+    assert answer.answer == "The clinic allows 15 minutes of grace for late arrivals."
+    assert answer.found_in_clinic_info
+    assert answer.source_sections
+    assert all(section in EXPECTED_SECTIONS for section in answer.source_sections)
+    assert "CLINIC INFORMATION START" in prompts[0][1]
+    assert "PATIENT QUESTION START" in prompts[0][1]
+    assert "same language as the patient's question" in prompts[0][0]
+
+
+def test_openai_compatible_not_found_uses_phone_fallback(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, persist_dir, embedding_function = rag_setup
+    build_index(config, persist_dir, embedding_function)
+    _use_openai_compatible_provider(monkeypatch)
+
+    answer = answer_question(
+        QuestionRequest(question="What happens if I arrive late?"),
+        db_path=db_path,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+        llm=lambda system, user: " NOT_FOUND ",
+    )
+
+    assert answer.found_in_clinic_info is False
+    assert answer.source_sections == []
+    assert config.phone in answer.answer
+
+
+def test_openai_compatible_skips_llm_for_distant_question(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, persist_dir, embedding_function = rag_setup
+    build_index(config, persist_dir, embedding_function)
+    _use_openai_compatible_provider(monkeypatch)
+
+    def forbidden_llm(system: str, user: str) -> str:
+        pytest.fail("LLM must not be called for a distant question")
+
+    answer = answer_question(
+        QuestionRequest(question="What is the quantum recipe for starfish?"),
+        db_path=db_path,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+        llm=forbidden_llm,
+    )
+
+    assert answer.found_in_clinic_info is False
+    assert config.phone in answer.answer
+
+
+def test_openai_compatible_provider_error_falls_back_to_extractive(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, db_path, persist_dir, embedding_function = rag_setup
+    build_index(config, persist_dir, embedding_function)
+    _use_openai_compatible_provider(monkeypatch)
+    best_chunk = retrieve(
+        "What is the late arrival policy?",
+        k=3,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+    )
+    expected = next(item for item in best_chunk if item["distance"] <= MAX_DISTANCE)
+
+    def failing_llm(system: str, user: str) -> str:
+        raise TimeoutError("do not expose error details")
+
+    answer = answer_question(
+        QuestionRequest(question="What is the late arrival policy?"),
+        db_path=db_path,
+        persist_dir=persist_dir,
+        embedding_function=embedding_function,
+        llm=failing_llm,
+    )
+
+    assert answer.answer == expected["text"]
+    assert answer.source_sections == [expected["section"]]
+    assert answer.found_in_clinic_info is True
+    assert config.phone not in answer.answer
+
+
+@pytest.mark.parametrize(
+    ("missing_variable", "configured_variable"),
+    [
+        ("LLM_BASE_URL", "LLM_MODEL"),
+        ("LLM_MODEL", "LLM_BASE_URL"),
+    ],
+)
+def test_openai_compatible_requires_base_url_and_model(
+    rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
+    monkeypatch: pytest.MonkeyPatch,
+    missing_variable: str,
+    configured_variable: str,
+) -> None:
+    config, db_path, persist_dir, embedding_function = rag_setup
+    build_index(config, persist_dir, embedding_function)
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("LLM_BASE_URL", "")
+    monkeypatch.setenv("LLM_MODEL", "")
+    monkeypatch.setenv(configured_variable, "configured")
+
+    with pytest.raises(ValueError, match=missing_variable):
+        answer_question(
+            QuestionRequest(question="What is the late arrival policy?"),
+            db_path=db_path,
+            persist_dir=persist_dir,
+            embedding_function=embedding_function,
+            llm=lambda system, user: "Unused",
+        )

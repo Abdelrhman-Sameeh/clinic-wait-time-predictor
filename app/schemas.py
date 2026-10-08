@@ -3,7 +3,7 @@
 from datetime import date, datetime, time
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 DayOfWeek = Literal["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -26,6 +26,8 @@ class Service(BaseModel):
 
 class ClinicConfig(BaseModel):
     """Configuration for a single clinic."""
+
+    model_config = ConfigDict(extra="allow")
 
     clinic_name: str
     specialty: str
@@ -77,6 +79,12 @@ class ClinicConfig(BaseModel):
                         f"Each {field_name} range must lie within working hours"
                     )
         return self
+
+
+class ClinicConfigUpdate(ClinicConfig):
+    """Configuration accepted from Admin edits, with unknown keys rejected."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class QuestionRequest(BaseModel):

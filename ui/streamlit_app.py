@@ -9,6 +9,8 @@ import httpx
 import streamlit as st
 from dotenv import load_dotenv
 
+from app.schemas import ClinicConfig
+
 
 load_dotenv()
 API_URL = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
@@ -297,26 +299,61 @@ def _staff_view() -> None:
 def _admin_view() -> None:
     """Render a JSON configuration editor for authorized administrators."""
     api_key = _staff_headers()
-    if "config_json_editor" not in st.session_state:
+    if "admin_config_baseline" not in st.session_state:
         config = api_request("GET", "/admin/config", api_key=api_key)
         if not isinstance(config, dict):
             return
-        st.session_state["config_json_editor"] = json.dumps(
-            config, indent=2
-        )
-    if st.button("Reload configuration"):
+        st.session_state["admin_config_baseline"] = config
+        st.session_state["config_json_editor"] = json.dumps(config, indent=2)
+
+    if st.button("Reload from server"):
         config = api_request("GET", "/admin/config", api_key=api_key)
         if isinstance(config, dict):
-            st.session_state["config_json_editor"] = json.dumps(
-                config, indent=2
-            )
+            st.session_state["admin_config_baseline"] = config
+            st.session_state["config_json_editor"] = json.dumps(config, indent=2)
             st.rerun()
+
+    if "admin_config_pending_refresh" in st.session_state:
+        config = st.session_state.pop("admin_config_pending_refresh")
+        st.session_state["admin_config_baseline"] = config
+        st.session_state["config_json_editor"] = json.dumps(config, indent=2)
+
+    index_status = api_request(
+        "GET", "/staff/index-status", api_key=api_key
+    )
+    if isinstance(index_status, dict):
+        section_titles = ", ".join(index_status["section_titles"]) or "none"
+        st.info(
+            f"Index: {index_status['chunk_count']} chunks, "
+            f"sections: {section_titles}"
+        )
 
     config_text = st.text_area(
         "Clinic configuration JSON",
         key="config_json_editor",
         height=480,
     )
+    save_notice = st.session_state.pop("admin_save_notice", None)
+    if save_notice is not None:
+        changed_fields = save_notice["changed_fields"]
+        if not changed_fields:
+            st.info("No changes detected.")
+        elif save_notice["index_rebuilt"]:
+            st.success("Configuration saved and confirmed; RAG index rebuilt.")
+        else:
+            st.warning(
+                save_notice["warning"]
+                or "Configuration saved, but the RAG index rebuild could not be confirmed."
+            )
+
+        if changed_fields:
+            st.write("Changed fields")
+            for field, old_value, new_value in changed_fields:
+                st.write(
+                    f"- **{field}**: {json.dumps(old_value)} → "
+                    f"{json.dumps(new_value)}"
+                )
+
     if st.button("Save configuration"):
         try:
             config_payload = json.loads(config_text)
@@ -329,11 +366,53 @@ def _admin_view() -> None:
             api_key=api_key,
             payload=config_payload,
         )
-        if isinstance(result, dict):
-            if result["index_rebuilt"]:
-                st.success("Configuration saved and RAG index rebuilt.")
-            else:
-                st.warning(result["warning"])
+        if not isinstance(result, dict) or result.get("saved") is not True:
+            return
+
+        confirmed_config = api_request("GET", "/admin/config", api_key=api_key)
+        if not isinstance(confirmed_config, dict):
+            st.error("Could not confirm the saved configuration from the server.")
+            return
+        expected_config = ClinicConfig.model_validate(
+            config_payload
+        ).model_dump(mode="json")
+        if confirmed_config != expected_config:
+            differing_fields = [
+                field
+                for field in dict.fromkeys((*expected_config, *confirmed_config))
+                if expected_config.get(field) != confirmed_config.get(field)
+            ]
+            st.error(
+                "The server configuration differs from the validated "
+                "configuration in these fields: "
+                + ", ".join(differing_fields)
+                + ". Your edits remain in the editor."
+            )
+            return
+
+        confirmed_index = api_request(
+            "GET", "/staff/index-status", api_key=api_key
+        )
+        index_rebuilt = (
+            result.get("index_rebuilt") is True
+            and isinstance(result.get("chunk_count"), int)
+            and isinstance(confirmed_index, dict)
+            and confirmed_index.get("chunk_count") == result["chunk_count"]
+        )
+
+        previous_config = st.session_state["admin_config_baseline"]
+        changed_fields = [
+            (field, previous_config.get(field), confirmed_config.get(field))
+            for field in dict.fromkeys((*previous_config, *confirmed_config))
+            if previous_config.get(field) != confirmed_config.get(field)
+        ]
+        st.session_state["admin_config_pending_refresh"] = confirmed_config
+        st.session_state["admin_save_notice"] = {
+            "changed_fields": changed_fields,
+            "index_rebuilt": index_rebuilt,
+            "warning": result.get("warning"),
+        }
+        st.rerun()
 
 
 def main() -> None:

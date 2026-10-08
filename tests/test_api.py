@@ -428,9 +428,124 @@ def test_admin_config_validation_and_index_rebuild(api_client) -> None:
     assert saved.json() == {
         "saved": True,
         "index_rebuilt": True,
+        "chunk_count": client.get(
+            "/staff/index-status", headers=headers
+        ).json()["chunk_count"],
         "warning": None,
     }
     assert load_clinic_config(path=db_path) == changed_config
+
+
+def test_admin_config_put_is_returned_by_get_and_sqlite(api_client) -> None:
+    client, config, db_path = api_client
+    changed_config = config.model_copy(
+        update={"acceptable_wait_min": config.acceptable_wait_min + 5}
+    )
+
+    saved = client.put(
+        "/admin/config",
+        json=changed_config.model_dump(mode="json"),
+        headers=staff_headers(),
+    )
+    fetched = client.get("/admin/config", headers=staff_headers())
+
+    assert saved.status_code == 200
+    assert saved.json()["saved"] is True
+    assert fetched.status_code == 200
+    assert fetched.json() == changed_config.model_dump(mode="json")
+    assert load_clinic_config(path=db_path) == changed_config
+
+
+def test_admin_config_put_normalizes_omitted_default_fields(api_client) -> None:
+    client, config, db_path = api_client
+    payload = config.model_dump(mode="json")
+    del payload["breaks"]
+    del payload["buffer_min"]
+
+    saved = client.put(
+        "/admin/config",
+        json=payload,
+        headers=staff_headers(),
+    )
+    fetched = client.get("/admin/config", headers=staff_headers())
+    submitted_config = ClinicConfig.model_validate(payload)
+    expected = submitted_config.model_dump(mode="json")
+
+    assert saved.status_code == 200
+    assert fetched.status_code == 200
+    assert fetched.json() == expected
+    assert fetched.json() != payload
+    assert load_clinic_config(path=db_path) == submitted_config
+
+
+def test_admin_config_rejects_unknown_fields(api_client) -> None:
+    client, config, db_path = api_client
+    payload = config.model_dump(mode="json")
+    payload["QOS"] = "Perfect"
+
+    rejected = client.put(
+        "/admin/config",
+        json=payload,
+        headers=staff_headers(),
+    )
+
+    assert rejected.status_code == 422
+    assert any(
+        error["loc"][-1] == "QOS"
+        for error in rejected.json()["detail"]
+    )
+    assert load_clinic_config(path=db_path) == config
+
+
+def test_updated_policy_is_retrievable_after_admin_put(api_client) -> None:
+    client, config, db_path = api_client
+    distinctive_policy = (
+        "Please cancel at least 4 hours ahead. Mention the Starling marker."
+    )
+    payload = config.model_dump(mode="json")
+    payload["cancellation_policy"] = distinctive_policy
+
+    saved = client.put(
+        "/admin/config",
+        json=payload,
+        headers=staff_headers(),
+    )
+    answer = client.post(
+        "/ask",
+        json={"question": "What does the Starling cancellation policy say?"},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["index_rebuilt"] is True
+    assert isinstance(saved.json()["chunk_count"], int)
+    assert answer.status_code == 200
+    assert "Starling" in answer.json()["answer"]
+    assert "Cancellation Policy" in answer.json()["source_sections"]
+    assert load_clinic_config(path=db_path).cancellation_policy == distinctive_policy
+
+
+def test_staff_index_status_reports_current_index_and_paths(api_client) -> None:
+    client, _, db_path = api_client
+
+    response = client.get(
+        "/staff/index-status",
+        headers=staff_headers(),
+    )
+
+    assert response.status_code == 200
+    status = response.json()
+    assert status["chunk_count"] > 0
+    assert status["db_path"] == db_path
+    assert status["chroma_dir"] == str(Path(db_path).parent / "chroma")
+    assert "Cancellation Policy" in status["section_titles"]
+
+
+def test_staff_index_status_requires_staff_key(api_client) -> None:
+    client, _, _ = api_client
+
+    response = client.get("/staff/index-status")
+
+    assert response.status_code == 401
 
 
 def test_admin_keeps_saved_config_when_index_rebuild_fails(
@@ -454,6 +569,7 @@ def test_admin_keeps_saved_config_when_index_rebuild_fails(
     assert response.status_code == 200
     assert response.json()["saved"] is True
     assert response.json()["index_rebuilt"] is False
+    assert response.json()["chunk_count"] is None
     assert response.json()["warning"]
     assert load_clinic_config(path=db_path) == changed_config
 

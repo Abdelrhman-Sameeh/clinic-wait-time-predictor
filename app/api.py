@@ -23,7 +23,7 @@ from app.db import (
     load_clinic_config,
     save_clinic_config,
 )
-from app.rag import answer_question, rebuild_index_from_db
+from app.rag import answer_question, get_index_status, rebuild_index_from_db
 from app.scheduler import (
     ClinicClosedError,
     ConfigNotFoundError,
@@ -43,6 +43,7 @@ from app.schemas import (
     BookingRequest,
     BookingResponse,
     ClinicConfig,
+    ClinicConfigUpdate,
     ConsultationEvent,
     QuestionRequest,
     RAGAnswer,
@@ -185,7 +186,17 @@ class ConfigSaveResponse(BaseModel):
 
     saved: bool
     index_rebuilt: bool
+    chunk_count: int | None = None
     warning: str | None = None
+
+
+class IndexStatusResponse(BaseModel):
+    """Current Chroma index status and configured storage paths."""
+
+    chunk_count: int
+    chroma_dir: str
+    db_path: str
+    section_titles: list[str]
 
 
 def require_staff_key(
@@ -421,6 +432,30 @@ def staff_data_summary() -> StaffDataSummary:
 
 
 @app.get(
+    "/staff/index-status",
+    response_model=IndexStatusResponse,
+    dependencies=[Depends(require_staff_key)],
+)
+def staff_index_status(
+    rag_deps: tuple[Any | None, Callable[[str, str], str] | None] = Depends(
+        get_rag_deps
+    ),
+) -> IndexStatusResponse:
+    """Return the current indexed content and the configured storage paths."""
+    embedding_function, _ = rag_deps
+    chunk_count, sections = get_index_status(
+        persist_dir=_chroma_dir(),
+        embedding_function=embedding_function,
+    )
+    return IndexStatusResponse(
+        chunk_count=chunk_count,
+        chroma_dir=_chroma_dir(),
+        db_path=_db_path(),
+        section_titles=sections,
+    )
+
+
+@app.get(
     "/admin/config",
     response_model=ClinicConfig,
     dependencies=[Depends(require_staff_key)],
@@ -436,7 +471,7 @@ def admin_get_config() -> ClinicConfig:
     dependencies=[Depends(require_staff_key)],
 )
 def admin_update_config(
-    config: ClinicConfig,
+    config: ClinicConfigUpdate,
     rag_deps: tuple[Any | None, Callable[[str, str], str] | None] = Depends(
         get_rag_deps
     ),
@@ -445,7 +480,7 @@ def admin_update_config(
     embedding_function, _ = rag_deps
     save_clinic_config(config, path=_db_path())
     try:
-        rebuild_index_from_db(
+        chunk_count = rebuild_index_from_db(
             db_path=_db_path(),
             persist_dir=_chroma_dir(),
             embedding_function=embedding_function,
@@ -455,6 +490,11 @@ def admin_update_config(
         return ConfigSaveResponse(
             saved=True,
             index_rebuilt=False,
+            chunk_count=None,
             warning="Configuration saved, but the RAG index was not rebuilt.",
         )
-    return ConfigSaveResponse(saved=True, index_rebuilt=True)
+    return ConfigSaveResponse(
+        saved=True,
+        index_rebuilt=True,
+        chunk_count=chunk_count,
+    )
