@@ -249,7 +249,7 @@ def build_index(
     client = chromadb.PersistentClient(path=str(Path(persist_dir)))
     try:
         client.delete_collection(name=COLLECTION_NAME)
-    except chromadb.errors.NotFoundError:
+    except (ValueError, TypeError):
         pass
 
     if embedding_function is None:
@@ -296,12 +296,15 @@ def retrieve(
 ) -> list[dict[str, Any]]:
     """Retrieve the nearest knowledge chunks for a patient question."""
     client = chromadb.PersistentClient(path=str(Path(persist_dir)))
-    if embedding_function is None:
-        collection = client.get_collection(name=COLLECTION_NAME)
-    else:
-        collection = client.get_collection(
-            name=COLLECTION_NAME, embedding_function=embedding_function
-        )
+    try:
+        if embedding_function is None:
+            collection = client.get_collection(name=COLLECTION_NAME)
+        else:
+            collection = client.get_collection(
+                name=COLLECTION_NAME, embedding_function=embedding_function
+            )
+    except (ValueError, TypeError):
+        return []
     result = collection.query(query_texts=[question], n_results=k)
     documents = result["documents"][0]
     metadatas = result["metadatas"][0]
@@ -326,12 +329,15 @@ def get_index_status(
     if COLLECTION_NAME not in {collection.name for collection in collections}:
         return 0, []
 
-    if embedding_function is None:
-        collection = client.get_collection(name=COLLECTION_NAME)
-    else:
-        collection = client.get_collection(
-            name=COLLECTION_NAME, embedding_function=embedding_function
-        )
+    try:
+        if embedding_function is None:
+            collection = client.get_collection(name=COLLECTION_NAME)
+        else:
+            collection = client.get_collection(
+                name=COLLECTION_NAME, embedding_function=embedding_function
+            )
+    except (ValueError, TypeError):
+        return 0, []
     metadata = collection.get(include=["metadatas"])["metadatas"] or []
     sections = sorted(
         {

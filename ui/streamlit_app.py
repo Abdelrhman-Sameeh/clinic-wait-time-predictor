@@ -10,6 +10,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from app.schemas import ClinicConfig
+from ui.styles import get_theme_css
 
 
 load_dotenv()
@@ -418,17 +419,28 @@ def _admin_view() -> None:
 def main() -> None:
     """Run the Streamlit interface."""
     st.set_page_config(page_title="Clinic Smart Booking", page_icon="🏥")
+    st.markdown(get_theme_css(), unsafe_allow_html=True)
+    with st.sidebar:
+        st.markdown("## 🏥 Al Noor Clinic")
+        st.markdown("### Navigation")
+        mode = st.radio("View", ["💬 Assistant", "📚 Knowledge Base", "⚙️ Clinic Configuration", "📊 System / RAG Status"])
     st.title("Clinic Next-Day Smart Booking")
-    mode = st.sidebar.radio("View", ["Patient", "Staff", "Admin"])
-    if mode in {"Staff", "Admin"}:
-        st.sidebar.text_input(
+    with st.sidebar:
+        st.text_input(
             "Staff API key",
             type="password",
             key="staff_api_key",
         )
-    if mode == "Patient":
+    mode_key = {
+        "💬 Assistant": "Patient",
+        "📚 Knowledge Base": "Patient",
+        "⚙️ Clinic Configuration": "Admin",
+        "📊 System / RAG Status": "Staff",
+    }
+    resolved_mode = mode_key.get(mode, "Patient")
+    if resolved_mode == "Patient":
         _patient_view()
-    elif mode == "Staff":
+    elif resolved_mode == "Staff":
         _staff_view()
     else:
         _admin_view()
