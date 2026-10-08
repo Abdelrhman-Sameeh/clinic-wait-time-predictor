@@ -15,21 +15,23 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.db import (
+    backfill_default_clinic_config,
+    delete_knowledge_base_item,
     get_appointment,
     get_appointment_data_summary,
     get_patient_phone,
     init_db,
+    list_knowledge_base,
     list_appointments_by_date,
     load_clinic_config,
+    save_knowledge_base_item,
     save_clinic_config,
 )
+from app.chroma_store import get_chroma_path
+from app.config_defaults import DEFAULT_CLINIC_CONFIG
 from app.rag import (
-    KnowledgeIndexUnavailable,
-    add_admin_knowledge,
     answer_question,
-    delete_admin_knowledge,
     get_index_status,
-    list_admin_knowledge,
     rebuild_index_from_db,
 )
 from app.scheduler import (
@@ -73,8 +75,8 @@ def _db_path() -> str:
 
 
 def _chroma_dir() -> str:
-    """Return the configured Chroma persistence directory."""
-    return os.getenv("CHROMA_DIR", "chroma_db")
+    """Return the one absolute Chroma storage path used by the API."""
+    return str(get_chroma_path())
 
 
 def get_rag_deps() -> tuple[Any | None, Callable[[str, str], str] | None]:
@@ -91,25 +93,42 @@ def _saved_config() -> ClinicConfig:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Initialize SQLite and optionally create a sample configuration."""
+    """Initialize storage and backfill the single clinic from repo defaults."""
     path = _db_path()
     init_db(path)
-    if (
-        os.getenv("SEED_SAMPLE_CONFIG", "false").strip().casefold() == "true"
-        and load_clinic_config(path=path) is None
-    ):
-        sample_path = PROJECT_ROOT / "data" / "sample_clinic_config.json"
-        config = ClinicConfig.model_validate_json(
-            sample_path.read_text(encoding="utf-8")
+    backfill_default_clinic_config(path=path)
+    LOGGER.info("Using Chroma storage at %s", _chroma_dir())
+    rag_dependency = app.dependency_overrides.get(get_rag_deps)
+    embedding_function, _ = (
+        rag_dependency() if rag_dependency is not None else get_rag_deps()
+    )
+    if os.getenv("LLM_PROVIDER", "extractive").strip().casefold() == "qwen":
+        from app.qwen import get_model_runtime_info
+
+        runtime = get_model_runtime_info()
+        LOGGER.info(
+            "Qwen runtime selected at startup: device=%s dtype=%s",
+            runtime["device"],
+            runtime["dtype"],
         )
-        save_clinic_config(config, path=path)
-        try:
+    try:
+        document_count, _ = get_index_status(
+            persist_dir=_chroma_dir(),
+            embedding_function=embedding_function,
+            clinic_id=1,
+        )
+        if document_count == 0:
             rebuild_index_from_db(
                 db_path=path,
                 persist_dir=_chroma_dir(),
+                embedding_function=embedding_function,
+                clinic_id=1,
             )
-        except Exception as exc:
-            LOGGER.warning("Sample config saved, but RAG index build failed: %s", exc)
+    except Exception:
+        LOGGER.exception(
+            "Clinic %s defaults/config loaded, but startup RAG index check/rebuild failed",
+            1,
+        )
     yield
 
 
@@ -214,6 +233,7 @@ class IndexStatusResponse(BaseModel):
 class AdminKnowledgeCreate(BaseModel):
     """One free-form entry submitted by clinic staff."""
 
+    title: str = Field(default="Admin entry", min_length=1, max_length=200)
     content: str = Field(min_length=1)
 
 
@@ -221,8 +241,40 @@ class AdminKnowledgeRecord(BaseModel):
     """A persisted free-form knowledge entry."""
 
     id: str
+    title: str
     content: str
     timestamp: str
+    index_warning: str | None = None
+
+
+class AdminKnowledgeDeleteResponse(BaseModel):
+    """Result of deleting a knowledge entry and rebuilding its index."""
+
+    deleted: bool
+    index_rebuilt: bool
+    warning: str | None = None
+
+
+def _rebuild_saved_index(
+    embedding_function: Any = None,
+) -> tuple[int | None, str | None]:
+    """Rebuild the saved clinic's index, logging complete failure details."""
+    try:
+        indexed_count = rebuild_index_from_db(
+            db_path=_db_path(),
+            persist_dir=_chroma_dir(),
+            embedding_function=embedding_function,
+            clinic_id=1,
+        )
+    except Exception as exc:
+        LOGGER.exception("RAG index rebuild failed for clinic %s", 1)
+        return None, (
+            "The change was saved, but the clinic RAG index could not be "
+            f"rebuilt ({type(exc).__name__}: {exc}). "
+            "Run scripts/rebuild_chroma_indexes.py after resolving the "
+            "Chroma storage issue."
+        )
+    return indexed_count, None
 
 
 def require_staff_key(
@@ -248,9 +300,28 @@ def _format_time(value: time) -> str:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    """Report that the API process is responsive."""
-    return {"status": "ok"}
+def health() -> dict[str, str | bool]:
+    """Report API availability and the configured generation runtime."""
+    provider = os.getenv("LLM_PROVIDER", "extractive").strip().casefold()
+    health_status: dict[str, str | bool] = {
+        "status": "ok",
+        "llm_provider": provider,
+        "llm_loaded": False,
+        "llm_device": "not_applicable",
+        "llm_dtype": "not_applicable",
+    }
+    if provider == "qwen":
+        from app.qwen import get_model_runtime_info, is_model_loaded
+
+        runtime = get_model_runtime_info()
+        health_status.update(
+            {
+                "llm_loaded": is_model_loaded(),
+                "llm_device": runtime["device"],
+                "llm_dtype": runtime["dtype"],
+            }
+        )
+    return health_status
 
 
 @app.get("/clinic", response_model=ClinicPublicInfo)
@@ -472,11 +543,9 @@ def staff_index_status(
     chunk_count, sections = get_index_status(
         persist_dir=_chroma_dir(),
         embedding_function=embedding_function,
+        clinic_id=1,
     )
-    admin_entries = list_admin_knowledge(
-        persist_dir=_chroma_dir(),
-        embedding_function=embedding_function,
-    )
+    admin_entries = list_knowledge_base(path=_db_path())
     provider = os.getenv("LLM_PROVIDER", "extractive").strip().casefold()
     model_loaded = False
     if provider == "qwen":
@@ -504,18 +573,11 @@ def staff_index_status(
     dependencies=[Depends(require_staff_key)],
 )
 def staff_list_knowledge(
-    rag_deps: tuple[Any | None, Callable[[str, str], str] | None] = Depends(
-        get_rag_deps
-    ),
 ) -> list[AdminKnowledgeRecord]:
-    """List admin-added knowledge stored in the clinic's vector collection."""
-    embedding_function, _ = rag_deps
+    """List admin-added knowledge persisted for the clinic."""
     return [
         AdminKnowledgeRecord(**entry)
-        for entry in list_admin_knowledge(
-            persist_dir=_chroma_dir(),
-            embedding_function=embedding_function,
-        )
+        for entry in list_knowledge_base(path=_db_path())
     ]
 
 
@@ -531,27 +593,58 @@ def staff_add_knowledge(
         get_rag_deps
     ),
 ) -> AdminKnowledgeRecord:
-    """Chunk, embed, and persist an admin entry in the existing vector store."""
-    if not entry.content.strip():
+    """Persist an admin entry, then rebuild the shared clinic index."""
+    if not entry.content.strip() or not entry.title.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Knowledge content must not be blank.",
+            detail="Knowledge title and content must not be blank.",
         )
     embedding_function, _ = rag_deps
-    try:
-        stored = add_admin_knowledge(
-            entry.content,
-            persist_dir=_chroma_dir(),
-            embedding_function=embedding_function,
+    stored = save_knowledge_base_item(
+        title=entry.title.strip(),
+        content=entry.content.strip(),
+        path=_db_path(),
+    )
+    _, warning = _rebuild_saved_index(embedding_function)
+    return AdminKnowledgeRecord(**stored, index_warning=warning)
+
+
+@app.put(
+    "/staff/knowledge/{document_id}",
+    response_model=AdminKnowledgeRecord,
+    dependencies=[Depends(require_staff_key)],
+)
+def staff_edit_knowledge(
+    document_id: str,
+    entry: AdminKnowledgeCreate,
+    rag_deps: tuple[Any | None, Callable[[str, str], str] | None] = Depends(
+        get_rag_deps
+    ),
+) -> AdminKnowledgeRecord:
+    """Update an admin entry and refresh its indexed chunks."""
+    if not entry.content.strip() or not entry.title.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Knowledge title and content must not be blank.",
         )
-    except KnowledgeIndexUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return AdminKnowledgeRecord(**stored)
+    if not any(
+        item["id"] == document_id for item in list_knowledge_base(path=_db_path())
+    ):
+        raise HTTPException(status_code=404, detail="knowledge entry not found")
+    stored = save_knowledge_base_item(
+        title=entry.title.strip(),
+        content=entry.content.strip(),
+        path=_db_path(),
+        item_id=document_id,
+    )
+    embedding_function, _ = rag_deps
+    _, warning = _rebuild_saved_index(embedding_function)
+    return AdminKnowledgeRecord(**stored, index_warning=warning)
 
 
 @app.delete(
     "/staff/knowledge/{document_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=AdminKnowledgeDeleteResponse,
     dependencies=[Depends(require_staff_key)],
 )
 def staff_delete_knowledge(
@@ -559,16 +652,18 @@ def staff_delete_knowledge(
     rag_deps: tuple[Any | None, Callable[[str, str], str] | None] = Depends(
         get_rag_deps
     ),
-) -> None:
-    """Remove one admin entry and all of its vector chunks."""
+) -> AdminKnowledgeDeleteResponse:
+    """Remove one admin entry from persistence and refresh the index."""
     embedding_function, _ = rag_deps
-    deleted = delete_admin_knowledge(
-        document_id,
-        persist_dir=_chroma_dir(),
-        embedding_function=embedding_function,
-    )
+    deleted = delete_knowledge_base_item(document_id, path=_db_path())
     if not deleted:
         raise HTTPException(status_code=404, detail="knowledge entry not found")
+    indexed_count, warning = _rebuild_saved_index(embedding_function)
+    return AdminKnowledgeDeleteResponse(
+        deleted=True,
+        index_rebuilt=indexed_count is not None,
+        warning=warning,
+    )
 
 
 @app.get(
@@ -594,20 +689,31 @@ def admin_update_config(
 ) -> ConfigSaveResponse:
     """Save a validated configuration, then report the index rebuild result."""
     embedding_function, _ = rag_deps
-    save_clinic_config(config, path=_db_path())
-    try:
-        chunk_count = rebuild_index_from_db(
-            db_path=_db_path(),
-            persist_dir=_chroma_dir(),
-            embedding_function=embedding_function,
-        )
-    except Exception as exc:
-        LOGGER.warning("Config saved, but RAG index rebuild failed: %s", exc)
+    existing = load_clinic_config(path=_db_path())
+    allowed_fields = ClinicConfigUpdate.model_fields
+    existing_data = (
+        {
+            key: value
+            for key, value in existing.model_dump(mode="json").items()
+            if key in allowed_fields
+        }
+        if existing
+        else {}
+    )
+    merged = {
+        **DEFAULT_CLINIC_CONFIG,
+        **existing_data,
+        **config.model_dump(mode="json"),
+    }
+    validated = ClinicConfigUpdate.model_validate(merged)
+    save_clinic_config(validated, path=_db_path())
+    chunk_count, warning = _rebuild_saved_index(embedding_function)
+    if warning:
         return ConfigSaveResponse(
             saved=True,
             index_rebuilt=False,
             chunk_count=None,
-            warning="Configuration saved, but the RAG index was not rebuilt.",
+            warning=warning,
         )
     return ConfigSaveResponse(
         saved=True,

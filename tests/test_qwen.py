@@ -25,7 +25,21 @@ def test_qwen_model_loader_is_cached_and_uses_cpu_safe_dtype(
         @staticmethod
         def from_pretrained(name: str, **kwargs: Any) -> object:
             calls.append(("model", {"name": name, **kwargs}))
-            return object()
+            class FakeModel:
+                device = None
+                is_eval = False
+
+                def to(self, device: Any) -> "FakeModel":
+                    self.device = device
+                    return self
+
+                def eval(self) -> "FakeModel":
+                    self.is_eval = True
+                    return self
+
+            model = FakeModel()
+            calls[-1][1]["result"] = model
+            return model
 
     monkeypatch.setitem(
         sys.modules,
@@ -37,6 +51,8 @@ def test_qwen_model_loader_is_cached_and_uses_cpu_safe_dtype(
     )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(qwen, "_MODEL_LOADED", False)
+    monkeypatch.setattr(qwen, "_MODEL_DEVICE", None)
+    monkeypatch.setattr(qwen, "_MODEL_DTYPE", None)
     qwen._load_model.clear()
     try:
         first = qwen._load_model()
@@ -49,7 +65,41 @@ def test_qwen_model_loader_is_cached_and_uses_cpu_safe_dtype(
     assert calls[0][1]["name"] == qwen.MODEL_NAME
     assert calls[1][1]["name"] == qwen.MODEL_NAME
     assert calls[1][1]["torch_dtype"] is torch.float32
-    assert calls[1][1]["device_map"] == "auto"
+    assert calls[1][1]["low_cpu_mem_usage"] is True
+    assert "device_map" not in calls[1][1]
+    assert first[1].device == torch.device("cpu")
+    assert first[1].is_eval
+    assert qwen.get_model_runtime_info() == {
+        "device": "cpu",
+        "dtype": "float32",
+    }
+
+
+@pytest.mark.parametrize(
+    ("free_memory", "expected_device", "expected_dtype"),
+    [
+        (qwen.MIN_FREE_VRAM_BYTES, "cuda:0", "float16"),
+        (qwen.MIN_FREE_VRAM_BYTES - 1, "cpu", "float32"),
+    ],
+)
+def test_qwen_selects_cuda_only_with_at_least_four_gib_free(
+    monkeypatch: pytest.MonkeyPatch,
+    free_memory: int,
+    expected_device: str,
+    expected_dtype: str,
+) -> None:
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        torch.cuda,
+        "mem_get_info",
+        lambda device=0: (free_memory, free_memory * 2),
+    )
+
+    device, dtype = qwen._select_device_and_dtype()
+
+    assert str(device) == expected_device
+    assert str(dtype).removeprefix("torch.") == expected_dtype
 
 
 def test_qwen_answer_uses_tokenizer_chat_template_and_greedy_decode(
@@ -79,6 +129,7 @@ def test_qwen_answer_uses_tokenizer_chat_template_and_greedy_decode(
 
         def generate(self, **kwargs: Any) -> Any:
             captured["generation_kwargs"] = kwargs
+            captured["inference_mode"] = torch.is_inference_mode_enabled()
             return torch.tensor([[1, 2, 3, 4]])
 
     monkeypatch.setattr(
@@ -102,3 +153,4 @@ def test_qwen_answer_uses_tokenizer_chat_template_and_greedy_decode(
     assert captured["generation_kwargs"]["max_new_tokens"] == qwen.MAX_NEW_TOKENS
     assert captured["generation_kwargs"]["do_sample"] is False
     assert captured["generation_kwargs"]["pad_token_id"] == 2
+    assert captured["inference_mode"] is True

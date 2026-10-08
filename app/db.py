@@ -3,7 +3,11 @@
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
+from uuid import uuid4
 
+from pydantic import ValidationError
+
+from app.config_defaults import DEFAULT_CLINIC_CONFIG
 from app.schemas import AppointmentRecord, ClinicConfig
 
 
@@ -63,6 +67,17 @@ def init_db(path: str = DEFAULT_DB_PATH) -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_base (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         appointment_columns = {
             row[1]
             for row in connection.execute("PRAGMA table_info(appointments)").fetchall()
@@ -109,6 +124,101 @@ def load_clinic_config(path: str = DEFAULT_DB_PATH) -> ClinicConfig | None:
     if row is None:
         return None
     return ClinicConfig.model_validate_json(row[0])
+
+
+def backfill_default_clinic_config(path: str = DEFAULT_DB_PATH) -> ClinicConfig:
+    """Create or repair the single clinic config using repository defaults."""
+    init_db(path)
+    try:
+        existing = load_clinic_config(path=path)
+    except (ValidationError, ValueError):
+        existing = None
+    if existing is None:
+        config = ClinicConfig.model_validate(DEFAULT_CLINIC_CONFIG)
+        save_clinic_config(config, path=path)
+        return config
+    raw_existing = existing.model_dump(mode="json")
+    merged = {
+        **DEFAULT_CLINIC_CONFIG,
+        **raw_existing,
+    }
+    config = ClinicConfig.model_validate(merged)
+    if config != existing:
+        save_clinic_config(config, path=path)
+    return config
+
+
+def list_knowledge_base(path: str = DEFAULT_DB_PATH) -> list[dict[str, str]]:
+    """List knowledge base entries in creation order."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        rows = connection.execute(
+            "SELECT id, title, content, created_at FROM knowledge_base "
+            "ORDER BY created_at, id"
+        ).fetchall()
+    finally:
+        connection.close()
+    return [
+        {"id": row[0], "title": row[1], "content": row[2], "timestamp": row[3]}
+        for row in rows
+    ]
+
+
+def save_knowledge_base_item(
+    title: str,
+    content: str,
+    path: str = DEFAULT_DB_PATH,
+    item_id: str | None = None,
+) -> dict[str, str]:
+    """Create or update one admin knowledge entry."""
+    init_db(path)
+    now = datetime.now().astimezone().isoformat()
+    entry_id = item_id or str(uuid4())
+    connection = get_connection(path)
+    try:
+        existing = connection.execute(
+            "SELECT created_at FROM knowledge_base WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        created_at = existing[0] if existing else now
+        connection.execute(
+            """
+            INSERT INTO knowledge_base (id, title, content, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                content = excluded.content,
+                updated_at = excluded.updated_at
+            """,
+            (entry_id, title, content, created_at, now),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return {
+        "id": entry_id,
+        "title": title,
+        "content": content,
+        "timestamp": created_at,
+    }
+
+
+def delete_knowledge_base_item(
+    item_id: str, path: str = DEFAULT_DB_PATH
+) -> bool:
+    """Delete a knowledge entry by ID."""
+    init_db(path)
+    connection = get_connection(path)
+    try:
+        cursor = connection.execute(
+            "DELETE FROM knowledge_base WHERE id = ?",
+            (item_id,),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    finally:
+        connection.close()
 
 
 def insert_appointment(

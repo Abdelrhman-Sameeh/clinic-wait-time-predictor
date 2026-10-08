@@ -15,10 +15,12 @@ from app.rag import (
     add_admin_knowledge,
     answer_question,
     build_index,
+    build_config_documents,
     build_knowledge_document,
     build_knowledge_sections,
     chunk_sections,
     delete_admin_knowledge,
+    get_index_status,
     is_overview_question,
     list_admin_knowledge,
     rebuild_index_from_db,
@@ -145,17 +147,20 @@ def test_build_index_replaces_existing_collection_without_duplicates(
     rag_setup: tuple[ClinicConfig, str, str, HashedBagOfWords],
 ) -> None:
     config, _, persist_dir, embedding_function = rag_setup
-    expected_count = len(chunk_sections(build_knowledge_sections(config)))
+    expected_count = len(build_config_documents(config))
 
     assert build_index(config, persist_dir, embedding_function) == expected_count
     assert build_index(config, persist_dir, embedding_function) == expected_count
+    assert get_index_status(
+        persist_dir=persist_dir, embedding_function=embedding_function
+    )[0] == expected_count
     results = retrieve(
         "late arrival policy",
         persist_dir=persist_dir,
         embedding_function=embedding_function,
         k=20,
     )
-    assert len(results) == expected_count
+    assert len(results) == min(20, expected_count)
 
 
 def test_admin_knowledge_is_retrievable_and_survives_config_rebuild(

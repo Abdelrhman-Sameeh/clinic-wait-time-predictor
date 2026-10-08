@@ -129,6 +129,25 @@ knowledge is chunked and embedded into the existing persistent Chroma
 collection; configuration updates rebuild the clinic sections while preserving
 those admin entries.
 
+Chroma uses one process-wide persistent client. Set `CHROMA_PATH` in `.env` to
+an absolute path for the shared index; relative values are resolved from the
+repository root. The legacy `CHROMA_DIR` setting is still accepted when
+`CHROMA_PATH` is not set. For local Chroma storage, run one API process only:
+the normal development command below uses a single reloader worker; do not add
+multiple Uvicorn workers or start another API process against the same index.
+
+To migrate existing clinic settings and admin knowledge, then replace stale
+clinic collections with rebuilt indexes, stop the API and run this once from
+the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\rebuild_chroma_indexes.py
+```
+
+The script backfills missing settings from `data/sample_clinic_config.json`,
+migrates legacy vector-only admin entries to SQLite, and rebuilds each saved
+clinic index at the configured Chroma path. Restart the API after it completes.
+
 The assistant uses the configured `LLM_PROVIDER`. For local Qwen generation,
 install its separate dependencies using a PyTorch build appropriate for the
 machine:
@@ -139,9 +158,11 @@ $env:LLM_PROVIDER = "qwen"
 ```
 
 The model `Qwen/Qwen2.5-1.5B-Instruct` is downloaded on first use and cached
-for the running process. FP16 inference needs roughly 3–4 GB of VRAM; CPU
-inference uses float32 and is considerably slower. If the model or its weights
-are unavailable, RAG answers fall back to the existing extractive generator.
+for the running process. It selects CUDA with float16 only when at least 4 GiB
+of VRAM is free; otherwise it selects CPU with float32. The selected device
+and dtype are logged when the API starts and reported by `/health`. CPU
+inference is considerably slower. If the model or its weights are unavailable,
+RAG answers fall back to the existing extractive generator.
 The existing retrieval evaluation remains in `notebooks/03_rag_demo.ipynb`.
 
 **Project structure**

@@ -784,6 +784,7 @@ def _knowledge_base_view() -> None:
     api_key = _staff_headers()
     st.header("📚 Knowledge Base")
     with st.form("admin_knowledge_form"):
+        title = st.text_input("Title", value="Admin entry")
         content = st.text_area(
             "Clinic knowledge",
             placeholder="Add clinic-specific information for the assistant.",
@@ -798,10 +799,12 @@ def _knowledge_base_view() -> None:
                 "POST",
                 "/staff/knowledge",
                 api_key=api_key,
-                payload={"content": content.strip()},
+                payload={"title": title.strip(), "content": content.strip()},
             )
             if isinstance(result, dict):
                 st.success("Knowledge added to the clinic assistant.")
+                if result.get("index_warning"):
+                    st.warning(result["index_warning"])
 
     notice = st.session_state.pop("knowledge_notice", None)
     if notice:
@@ -814,17 +817,57 @@ def _knowledge_base_view() -> None:
         st.info("No admin-added entries are stored yet.")
         return
     for entry in entries:
-        with st.container(border=True):
+        with st.expander(entry["title"]):
             st.caption(f"Added {entry['timestamp']}")
-            st.write(entry["content"])
-            if st.button("Delete entry", key=f"delete_knowledge_{entry['id']}"):
+            with st.form(f"edit_knowledge_{entry['id']}"):
+                edited_title = st.text_input(
+                    "Title",
+                    value=entry["title"],
+                    key=f"knowledge_title_{entry['id']}",
+                )
+                edited_content = st.text_area(
+                    "Clinic knowledge",
+                    value=entry["content"],
+                    key=f"knowledge_content_{entry['id']}",
+                    height=120,
+                )
+                save_edit, remove_item = st.columns(2)
+                with save_edit:
+                    edit_submitted = st.form_submit_button("Save entry")
+                with remove_item:
+                    delete_submitted = st.form_submit_button("Delete entry")
+            if edit_submitted:
+                updated = api_request(
+                    "PUT",
+                    f"/staff/knowledge/{entry['id']}",
+                    api_key=api_key,
+                    payload={
+                        "title": edited_title.strip(),
+                        "content": edited_content.strip(),
+                    },
+                )
+                if isinstance(updated, dict):
+                    if updated.get("index_warning"):
+                        st.warning(updated["index_warning"])
+                    else:
+                        st.session_state["knowledge_notice"] = (
+                            "Knowledge entry updated."
+                        )
+                    st.rerun()
+            if delete_submitted:
                 deleted = api_request(
                     "DELETE",
                     f"/staff/knowledge/{entry['id']}",
                     api_key=api_key,
                 )
-                if deleted is not None:
-                    st.session_state["knowledge_notice"] = "Knowledge entry deleted."
+                if isinstance(deleted, dict) and deleted.get("deleted") is True:
+                    st.session_state["knowledge_notice"] = (
+                        "Knowledge entry deleted."
+                    )
+                    if deleted.get("warning"):
+                        st.session_state["knowledge_notice"] += (
+                            f" {deleted['warning']}"
+                        )
                     st.rerun()
 
 

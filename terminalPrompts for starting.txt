@@ -2,7 +2,7 @@ Terminal 1: seed the demo database (runs once, then exits)
 
 powershell
 $env:DB_PATH = "data/demo.sqlite"
-$env:CHROMA_DIR = "chroma_db"
+$env:CHROMA_PATH = "chroma_db"
 .\.venv\Scripts\python.exe scripts\seed_demo_data.py
 
 This creates data/demo.sqlite with the sample config and 8 bookings. It's safe to re-run, and it never touches data/clinic.sqlite.
@@ -11,9 +11,8 @@ Terminal 2: start the API (leave it running)
 
 powershell
 $env:DB_PATH = "data/demo.sqlite"
-$env:CHROMA_DIR = "chroma_db"
+$env:CHROMA_PATH = "chroma_db"
 $env:STAFF_API_KEY = "my-long-random-demo-key-12345"
-$env:SEED_SAMPLE_CONFIG = "false"
 .\.venv\Scripts\python.exe -m uvicorn app.api:app --reload
 
 Pick any long random string for STAFF_API_KEY and remember it. You'll type the same value into the UI. Check that http://localhost:8000/health shows {"status":"ok"}. FastAPI also gives you free interactive docs at http://localhost:8000/docs, which is worth showing to the judges.
@@ -23,3 +22,38 @@ Terminal 3: start the UI (leave it running)
 powershell
 $env:API_URL = "http://localhost:8000"
 .\.venv\Scripts\python.exe -m streamlit run ui\streamlit_app.py
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+PS C:\Users\abdel\Downloads\Hindawi_project> $env:DB_PATH = "data/demo.sqlite"
+PS C:\Users\abdel\Downloads\Hindawi_project> $env:CHROMA_PATH = "chroma_db"
+PS C:\Users\abdel\Downloads\Hindawi_project> $env:STAFF_API_KEY = "my-long-random-demo-key-12345"
+PS C:\Users\abdel\Downloads\Hindawi_project>
+
+
+
+
+
+
+
+
+
+PS C:\Users\abdel\Downloads\Hindawi_project> $env:API_URL = "http://127.0.0.1:8001"
+PS C:\Users\abdel\Downloads\Hindawi_project> .\.venv\Scripts\python.exe -m streamlit run ui\streamlit_app.py

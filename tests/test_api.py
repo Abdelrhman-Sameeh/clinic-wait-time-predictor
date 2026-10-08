@@ -3,7 +3,7 @@
 import hashlib
 import json
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -123,7 +123,7 @@ def staff_headers() -> dict[str, str]:
 def test_health_and_public_clinic_fields(api_client) -> None:
     client, config, _ = api_client
 
-    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/health").json()["status"] == "ok"
     response = client.get("/clinic")
 
     assert response.status_code == 200
@@ -134,6 +134,29 @@ def test_health_and_public_clinic_fields(api_client) -> None:
     assert payload["services"][0]["name"] == config.services[0].name
     assert "late_arrival_policy" not in payload
     assert "noshow_policy" not in payload
+
+
+def test_health_reports_qwen_runtime(api_client, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = api_client
+    from app import qwen
+
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+    monkeypatch.setattr(
+        qwen,
+        "get_model_runtime_info",
+        lambda: {"device": "cuda:0", "dtype": "float16"},
+    )
+    monkeypatch.setattr(qwen, "is_model_loaded", lambda: True)
+
+    response = client.get("/health")
+
+    assert response.json() == {
+        "status": "ok",
+        "llm_provider": "qwen",
+        "llm_loaded": True,
+        "llm_device": "cuda:0",
+        "llm_dtype": "float16",
+    }
 
 
 def test_clinic_returns_503_when_config_is_missing(api_client) -> None:
@@ -436,6 +459,85 @@ def test_admin_config_validation_and_index_rebuild(api_client) -> None:
     assert load_clinic_config(path=db_path) == changed_config
 
 
+def test_config_and_knowledge_updates_refresh_rag_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = str(tmp_path / "clinic.sqlite")
+    chroma_dir = str(tmp_path / "chroma")
+    monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setenv("CHROMA_DIR", chroma_dir)
+    monkeypatch.setenv("STAFF_API_KEY", TEST_STAFF_KEY)
+    monkeypatch.setenv("LLM_PROVIDER", "extractive")
+    embedding = TestEmbedding()
+
+    def fake_llm(system_prompt: str, user_prompt: str) -> str:
+        context = json.loads(user_prompt)["context"]
+        return json.dumps(
+            {
+                "answer": context[0]["text"],
+                "source_sections": [context[0]["section"]],
+                "found_in_clinic_info": True,
+            }
+        )
+
+    app.dependency_overrides[get_rag_deps] = lambda: (embedding, fake_llm)
+    headers = staff_headers()
+    try:
+        with TestClient(app) as client:
+            expected_defaults = ClinicConfig.model_validate_json(
+                SAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
+            )
+            assert load_clinic_config(path=db_path) == expected_defaults
+            initial_answer = client.post(
+                "/ask",
+                json={"question": "What are your working hours?"},
+            )
+            assert initial_answer.status_code == 200
+            assert "4:00 PM to 9:00 PM" in initial_answer.json()["answer"]
+
+            updated = expected_defaults.model_copy(
+                update={"work_start": time(17), "work_end": time(20)}
+            )
+            saved = client.put(
+                "/admin/config",
+                json=updated.model_dump(mode="json"),
+                headers=headers,
+            )
+            assert saved.status_code == 200
+            assert load_clinic_config(path=db_path) == updated
+
+            updated_answer = client.post(
+                "/ask",
+                json={"question": "What are your working hours?"},
+            )
+            assert updated_answer.status_code == 200
+            assert "5:00 PM to 8:00 PM" in updated_answer.json()["answer"]
+            assert "4:00 PM to 9:00 PM" not in updated_answer.json()["answer"]
+
+            knowledge = client.post(
+                "/staff/knowledge",
+                json={
+                    "title": "Dr. Sarah's schedule",
+                    "content": (
+                        "Dr. Sarah is available every Thursday from 4 PM to 8 PM."
+                    ),
+                },
+                headers=headers,
+            )
+            assert knowledge.status_code == 201
+            schedule_answer = client.post(
+                "/ask",
+                json={"question": "When is Dr. Sarah available?"},
+            )
+            assert schedule_answer.status_code == 200
+            assert "Thursday from 4 PM to 8 PM" in schedule_answer.json()["answer"]
+            assert schedule_answer.json()["source_sections"] == [
+                "Knowledge Base: Dr. Sarah's schedule"
+            ]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_admin_config_put_is_returned_by_get_and_sqlite(api_client) -> None:
     client, config, db_path = api_client
     changed_config = config.model_copy(
@@ -541,7 +643,7 @@ def test_admin_knowledge_endpoints_ingest_retrieve_and_delete(api_client) -> Non
     assert answer.status_code == 200
     assert "Thursday from 4 PM to 8 PM" in answer.json()["answer"]
     assert answer.json()["found_in_clinic_info"]
-    assert answer.json()["source_sections"] == ["Admin Knowledge"]
+    assert answer.json()["source_sections"] == ["Knowledge Base: Admin entry"]
     assert status_response.json()["admin_document_count"] == 1
     assert client.get("/staff/knowledge").status_code == 401
 
@@ -549,7 +651,9 @@ def test_admin_knowledge_endpoints_ingest_retrieve_and_delete(api_client) -> Non
         f"/staff/knowledge/{entry['id']}",
         headers=headers,
     )
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"]
+    assert deleted.json()["index_rebuilt"]
     assert client.get("/staff/knowledge", headers=headers).json() == []
 
 
@@ -671,17 +775,22 @@ def test_admin_keeps_saved_config_when_index_rebuild_fails(
     assert load_clinic_config(path=db_path) == changed_config
 
 
-def test_startup_seeds_sample_config_only_when_enabled(
+def test_startup_backfills_defaults_and_rebuilds_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = str(tmp_path / "seeded.sqlite")
     monkeypatch.setenv("DB_PATH", db_path)
     monkeypatch.setenv("CHROMA_DIR", str(tmp_path / "seed-chroma"))
-    monkeypatch.setenv("SEED_SAMPLE_CONFIG", "true")
+    monkeypatch.setenv("SEED_SAMPLE_CONFIG", "false")
     monkeypatch.setenv("STAFF_API_KEY", TEST_STAFF_KEY)
     rebuild_calls: list[tuple[str, str]] = []
 
-    def fake_rebuild(db_path: str, persist_dir: str) -> int:
+    def fake_rebuild(
+        db_path: str,
+        persist_dir: str,
+        embedding_function=None,
+        clinic_id: int = 1,
+    ) -> int:
         rebuild_calls.append((db_path, persist_dir))
         return 12
 
@@ -691,6 +800,10 @@ def test_startup_seeds_sample_config_only_when_enabled(
 
     assert response.status_code == 200
     assert response.json()["clinic_name"] == "Al Noor Family Clinic"
+    expected_config = ClinicConfig.model_validate_json(
+        SAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
+    )
+    assert load_clinic_config(path=db_path) == expected_config
     assert rebuild_calls == [(db_path, str(tmp_path / "seed-chroma"))]
 
 

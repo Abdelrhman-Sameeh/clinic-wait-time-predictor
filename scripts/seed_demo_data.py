@@ -15,7 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.db import get_connection, init_db, save_clinic_config
-from app.rag import build_index
+from app.chroma_store import get_chroma_path
+from app.rag import rebuild_index_from_db
 from app.schemas import BookingRequest, ClinicConfig
 from app.scheduler import book_appointment, day_abbrev, generate_slots
 
@@ -80,7 +81,11 @@ def main() -> None:
     )
     config, appointment_date, booking_count = seed_demo_data(database_path)
     try:
-        build_index(config, persist_dir=os.getenv("CHROMA_DIR", "chroma_db"))
+        rebuild_index_from_db(
+            db_path=database_path,
+            persist_dir=str(get_chroma_path()),
+            clinic_id=1,
+        )
         index_note = "RAG index rebuilt."
     except Exception as exc:
         LOGGER.warning("Demo data seeded, but RAG index build failed: %s", exc)
