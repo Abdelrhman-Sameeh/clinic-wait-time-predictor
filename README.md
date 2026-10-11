@@ -6,9 +6,9 @@
 
 | Field            | Value                                |
 | ---------------- | ------------------------------------ |
-| Full Name        | <your full name>                     |
-| Project Name     | Clinic Next-Day Smart Booking & Waiting-Time Recommendation System |
-| GitHub Username  | <your GitHub username>               |
+| Full Name        | Abdelrhman Sameeh Zahran             |
+| Project Name     |clinic-wait-time-predictor            |
+| GitHub Username  | Abdelrhman-Sameeh                    |
 | Internship Batch | August–October 2026                  |
 | Training Program | Large Language Models (LLMs) Program |
 | Organization     | [**Edrak for Ai**](https://edrak4ai.com/en)                         |
@@ -16,21 +16,27 @@
 ---
 
 # 📖 Project Overview
+## The Story Behind the Project
 
-Patients often arrive early at clinics and wait for an unknown amount of time. This project helps a clinic (one doctor, one specialty) reduce that waiting. Patients book for **the next day**, and the system tells each patient:
+A friend of mine had been missing college for two days. When I asked him why, he told me he was accompanying his mother to a clinic.
 
-* their queue / appointment number
-* the expected consultation time
-* the recommended time to arrive at the clinic
+I was confused. How could a clinic visit take two entire days? What about his lectures and exams?
 
-The system works in **two phases**, because a new clinic has no historical data:
+He explained that the doctor was well-known for his expertise, attracting patients from different governorates. Some patients arrived as early as dawn just to secure their place in the queue. My friend had spent two days waiting for his mother to be examined, putting his education and daily life on hold because someone he loved needed medical care.
 
-**Phase 1: Cold Start (rules + RAG)**
-The doctor fills one structured registration form (working hours, breaks, appointment duration, policies, peak hours, services). The form is validated with Pydantic and stored in a database. It is also converted into a clinic knowledge document, which is chunked, embedded, and stored in a vector database. Patient questions such as *"What happens if I arrive 20 minutes late?"* are answered with RAG from that specific clinic's rules. Booking uses queue/scheduling logic based on the clinic configuration and current bookings (no ML). Every appointment is logged with what the system predicted and what actually happened.
+**This made me realize that the problem is not always the quality of healthcare, but also how patients access it.**
 
-**Phase 2: Clinic-Specific ML**
-After enough real, high-quality records are collected (checked by record count and data quality, not by date alone), a regression model is trained on that clinic's own data to predict actual waiting time. It replaces the rule-based estimate only if it performs better.
+### The Solution
 
+The **Clinic Waiting-Time Prediction and Best Visit-Time Recommendation System** aims to make clinic visits more predictable and convenient. Patients can book appointments online for the next day and receive their queue number, estimated consultation time, and recommended arrival time. They can also identify peak hours and understand the clinic's late-arrival policies, helping them avoid unnecessary waiting.
+
+The system also uses **Retrieval-Augmented Generation (RAG)** to answer questions about the clinic's services, specialties, and policies using information provided by the doctor, even outside working hours.
+
+The project follows two phases: **Phase 1 — Cold Start**, where scheduling relies on the doctor's configuration, current bookings, and predefined rules without ML; and **Phase 2 — Clinic-Specific ML**, where a regression model learns from real appointment records to improve waiting-time estimates, replacing the initial method only if it performs better.
+
+### Our Goal
+
+**Help patients spend less time waiting and more time living.** By combining smarter scheduling, data-driven predictions, and AI-powered information retrieval, the system aims to make healthcare access more organized, transparent, and convenient for both patients and clinic owners.
 **Separation of responsibilities**
 
 | Component | Question it answers |
@@ -186,22 +192,72 @@ The existing retrieval evaluation remains in `notebooks/03_rag_demo.ipynb`.
 ---
 
 # 📸 Demo
+<img width="975" height="470" alt="image" src="https://github.com/user-attachments/assets/d8ac1fc3-d705-4988-a40e-3c5ede598e81" />
 
-<!-- Add screenshots, GIFs, or a demo video here, for example: -->
-<!-- ![Booking result](docs/booking_result.png) -->
-<!-- [Demo video](link) -->
+RAG answering:
+<img width="975" height="467" alt="image" src="https://github.com/user-attachments/assets/57268ef2-196d-43b1-8c59-a9e929db20fe" />
 
-*Coming soon.*
+Adding knowledge base:
+<img width="975" height="466" alt="image" src="https://github.com/user-attachments/assets/1dc9af4a-cd06-4b56-9b56-e1df969cd64f" />
+
+clinic config:
+<img width="863" height="1090" alt="image" src="https://github.com/user-attachments/assets/8eb80341-5155-40bf-9b82-2d31f7f09334" />
+<img width="853" height="1088" alt="image" src="https://github.com/user-attachments/assets/d7fd0c4d-9863-4e36-a68f-da178b8545b1" />
+
+system status: 
+<img width="752" height="507" alt="image" src="https://github.com/user-attachments/assets/799a0936-c353-4d5a-a356-869ce65c0f93" />
+
+Booking:
+<img width="937" height="852" alt="image" src="https://github.com/user-attachments/assets/b744208b-8b69-4dd8-b606-3540bde91c48" />
+
 
 ---
 
 # 📈 Results
+Results
 
-<!-- Fill this in at the end with your real numbers, for example: -->
-<!-- - Number of appointment records collected -->
-<!-- - Phase 1 rule-based wait estimate error (MAE) -->
-<!-- - Phase 2 ML model error (MAE) and improvement over the rules -->
-<!-- - Example RAG answers -->
+Current Status
+
+The project currently implements a rule-based appointment scheduling system and a Retrieval-Augmented Generation (RAG) pipeline for answering clinic-related questions. Quantitative evaluation is still pending.
+
+1. Appointment Data
+
+Appointment records collected: Not yet measured.
+
+Data source: Appointments generated or recorded through the application.
+
+Data collection status: The application supports appointment persistence and visit-event tracking. The actual number of collected records must be measured from the database.
+
+2. Phase 1 — Rule-Based Wait-Time Estimation
+
+Method: Rule-based scheduling and wait-time estimation.
+
+Mean Absolute Error (MAE): Not yet evaluated.
+
+Evaluation status: Requires recorded actual waiting times and corresponding estimates.
+
+The MAE will be calculated as:
+
+[
+\mathrm{MAE}=\frac{1}{N}\sum_{i=1}^{N}|\hat{y}_i-y_i|
+]
+
+where (\hat{y}_i) is the estimated waiting time and (y_i) is the actual waiting time, both measured in the same unit.
+
+3. Phase 2 — Machine Learning Wait-Time Prediction
+
+Model: Not yet implemented as a trained wait-time prediction model.
+
+MAE: Not available.
+
+Improvement over the rule-based baseline: Not available.
+
+A trained model will be evaluated against the Phase 1 baseline using the same held-out test data. Improvement will be reported only after both approaches have been evaluated on comparable observations.
+
+4. RAG Evaluation
+
+Implementation: Clinic knowledge retrieval using embeddings and ChromaDB, followed by answer generation or extraction, depending on configuration.
+
 
 *To be completed after testing.*
 
