@@ -192,6 +192,9 @@ The existing retrieval evaluation remains in `notebooks/03_rag_demo.ipynb`.
 ---
 
 # 📸 Demo
+
+
+
 <img width="975" height="470" alt="image" src="https://github.com/user-attachments/assets/d8ac1fc3-d705-4988-a40e-3c5ede598e81" />
 
 RAG answering:
@@ -200,14 +203,25 @@ RAG answering:
 Adding knowledge base:
 <img width="975" height="466" alt="image" src="https://github.com/user-attachments/assets/1dc9af4a-cd06-4b56-9b56-e1df969cd64f" />
 
+
+
+
 clinic config:
 <img width="863" height="1090" alt="image" src="https://github.com/user-attachments/assets/8eb80341-5155-40bf-9b82-2d31f7f09334" />
 <img width="853" height="1088" alt="image" src="https://github.com/user-attachments/assets/d7fd0c4d-9863-4e36-a68f-da178b8545b1" />
 
+
+
 system status: 
+
+
+
 <img width="752" height="507" alt="image" src="https://github.com/user-attachments/assets/799a0936-c353-4d5a-a356-869ce65c0f93" />
 
 Booking:
+
+
+
 <img width="937" height="852" alt="image" src="https://github.com/user-attachments/assets/b744208b-8b69-4dd8-b606-3540bde91c48" />
 
 
